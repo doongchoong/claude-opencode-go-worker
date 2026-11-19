@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Let Claude hand off well-specified, verifiable work to OpenCode Go models as a flat-rate worker, with allowance usage in the status line.",
   "author": {
     "name": "doongchoong"

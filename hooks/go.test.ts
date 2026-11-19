@@ -757,8 +757,7 @@ test('worker: registered only with its option, with edit tools and a review-it-y
   await start($)
   expect(w.agents.map(a => a.name)).toEqual(['worker'])
   expect(w.agents[0].tools).toEqual(['Read', 'Edit', 'Write', 'Bash'])
-  // its commands are the user's to decide, not auto mode's classifier
-  expect(w.agents[0].permissionMode).toBe('acceptEdits')
+  expect(w.agents[0].permissionMode).toBeUndefined() // the session's mode: a mode of its own did not help under auto
   expect(w.agents[0].prompt).toContain('Never git commit')
   const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
   const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
@@ -817,7 +816,6 @@ test('worker and explore are told a refused command is final, and Claude is told
   expect(w.agents[0].prompt).toContain('report the check as NOT RUN')
   const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
   const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
-  expect(guide).toContain('acceptEdits mode')
-  expect(guide).toContain('run the check yourself')
-  expect(guide).toContain("don't add one yourself")
+  expect(guide).toContain('Run the check yourself')
+  expect(guide).toContain('both tested')
 })
