@@ -41,7 +41,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.3.1'
+const VERSION = '0.3.2'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -1014,6 +1014,10 @@ type GoAgent = {
   maxTurns: number
   maxTokens: number
   guide: string
+  // The agent's own permission mode; left out, it inherits the parent's. The worker runs in acceptEdits so its
+  // commands are decided by the person (prompts and allow rules) rather than auto mode's server-side classifier,
+  // which gives no verdict for steps that never reach Anthropic.
+  permissionMode?: string
 }
 
 // Schemas for the tools the agent may call. $.tool.list() gives names only, so they are written out here.
@@ -1116,11 +1120,12 @@ Its report comes from a non-Claude model: verify the facts you act on (open the 
     tools: ['Read', 'Edit', 'Write', 'Bash'],
     maxTurns: 60,
     maxTokens: 32_000,
+    permissionMode: 'acceptEdits',
     guide: `# OpenCode Go worker agent (${PLUGIN}:worker)
 For a contained coding task a command can verify (make failing tests pass, a well-specified change across a few files), the ${PLUGIN}:worker agent does it on the flat-rate OpenCode Go plan instead of Claude.
 - Its prompt gives the goal, the files, what is out of scope, and the check command. Don't use it for work no command can check, or that needs this conversation's context.
 - Its steps never reach Anthropic, so the server-side safety review does not see them; its tool calls still pass Claude Code's permission checks. Review its work yourself: git diff --stat, the parts that matter, and run the check command before calling it done.
-- In auto mode the classifier gives no verdict on its commands, so a command no allow rule covers is refused and its check comes back NOT RUN: run the check yourself. If the user will use the worker again with the same check, suggest an allow rule for it (for example Bash(npm test *) in the project's settings) so the worker can run it; don't add one yourself.
+- It runs in acceptEdits mode whatever the session's mode: its edits go through, and its commands are put to the user (or run under the user's allow rules) instead of auto mode's classifier, which can't judge steps that never reach Anthropic. A command the user declines comes back refused and the worker reports the check as NOT RUN: then run the check yourself. If the user will reuse the worker with the same check, suggest an allow rule for it (Bash(npm test *) in the project's settings); don't add one yourself.
 - Never run it alongside your own edits, or two workers, on the same files. If it fails twice, narrow the task for go_chat or do it yourself.`,
   },
 ]
@@ -1420,7 +1425,14 @@ export const register: Register = (on, options) => {
     if (!(await $.fs.exists(disabledFile(home)))) {
       for (const a of agentsOn) {
         try {
-          await $.agent.register({ name: a.name, description: a.description, prompt: a.prompt, tools: a.tools, maxTurns: a.maxTurns })
+          await $.agent.register({
+            name: a.name,
+            description: a.description,
+            prompt: a.prompt,
+            tools: a.tools,
+            maxTurns: a.maxTurns,
+            ...(a.permissionMode ? { permissionMode: a.permissionMode } : {}),
+          })
         } catch (err) {
           $.ui.log(`${PLUGIN}: ${a.name} agent not registered: ${(err as Error).message}`)
         }
