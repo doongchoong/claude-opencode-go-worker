@@ -1,0 +1,56 @@
+{
+  "name": "opencode-go-worker",
+  "version": "0.0.1",
+  "description": "Let Claude hand off well-specified, verifiable work to OpenCode Go models as a flat-rate worker, with allowance usage in the status line.",
+  "author": {
+    "name": "doongchoong"
+  },
+  "homepage": "https://github.com/doongchoong/claude-opencode-go-worker",
+  "repository": "https://github.com/doongchoong/claude-opencode-go-worker",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-go",
+    "worker",
+    "delegation"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "api_key": {
+      "type": "string",
+      "title": "OpenCode Console API key",
+      "description": "A Console key (oc_sk_...) from a workspace subscribed to Go. Stored in secure storage. Leave empty to use ~/.config/opencode-go/api_key (readable only by you). Environment variables are not read.",
+      "sensitive": true,
+      "required": false
+    },
+    "default_model": {
+      "type": "string",
+      "title": "Default model",
+      "description": "Model id used when Claude leaves model empty. Run go_models to see what your plan offers.",
+      "required": false
+    },
+    "allow_outside_workdir": {
+      "type": "boolean",
+      "title": "Skip the file permission check",
+      "description": "Off by default: `files` and `output_path` may only use paths Claude Code lets Claude Read / Write (working folder, scratchpad, /add-dir folders), and never files a deny rule blocks.",
+      "default": false
+    },
+    "explore_agent": {
+      "type": "boolean",
+      "title": "Read-only explore subagent (experimental)",
+      "description": "Registers a read-only subagent (Read, Grep, Glob) whose model requests go to OpenCode Go instead of Claude.",
+      "default": false
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the status line and /go-usage: auto (your system language, English if it can't be told), en or ko. Prompts and tool text the model reads are always English.",
+      "options": [
+        "auto",
+        "en",
+        "ko"
+      ],
+      "default": "auto"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "claude-opencode-go-worker",
+  "owner": { "name": "doongchoong" },
+  "metadata": { "description": "OpenCode Go as a flat-rate worker for Claude Code." },
+  "plugins": [
+    {
+      "name": "opencode-go-worker",
+      "source": "./",
+      "description": "OpenCode Go as a flat-rate worker for Claude: one-shot delegated work under Claude's control, plus an allowance status line."
+    }
+  ]
+}
