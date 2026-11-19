@@ -22,6 +22,7 @@ You ──▶ Claude (plans, reviews) ──▶ go_chat ──▶ OpenCode Go AP
 | `go_models` | The Go model lineup: context and output limits, allowed `reasoning_effort` values, how much each plan covers per month, and flags — featured, peak-hour multiplier (and whether it applies right now), whether the provider may keep or train on prompts. Free models are left out (they are for OpenCode itself). |
 | Status line | `opencode-go-worker 5h 4%` — the plugin is loaded, and how full the plan's 5-hour window is (looked up when the session starts and after every call; `5h —` when it can't be read). While a reply is being written it shows `writing… 120 lines`. |
 | `opencode-go-worker:explore` (experimental, off by default) | A read-only search subagent for Claude's Agent tool whose model steps run on OpenCode Go instead of Claude — like Claude Code's Explore agent, on the flat-rate plan. It reads files and runs read-only shell commands (`ls`, `find`, `rg`, `git log`…); every tool call still goes through Claude Code's own permission checks, since the engine runs them. Uses the model picked with `/go-model`. Turn it on with the `explore_agent` option. While it works, the model bar shows its progress (`explore step 3 · rg -n "session" hooks`) in place of the usage figures. Its findings come from a non-Claude model, so Claude is told to check the facts it acts on. |
+| `opencode-go-worker:worker` (experimental, off by default) | A coding subagent on OpenCode Go for a contained task a command can verify — make failing tests pass, a well-specified change across a few files. It reads, edits and writes files and runs commands; every tool call passes Claude Code's permission checks, since the engine runs them. It never commits. Claude gives it the goal, the files, what is out of scope and the check command, then reviews the diff and reruns the check itself. Turn it on with the `worker_agent` option. |
 | Model bar | One line above the prompt (terminal, desktop app, VS Code): `Go model: [glm-5.3 ▾]  3 calls · 12.4Ktok · cache 62% · $0.0012 · 5h 4% · wk 1%`. Pick a model in the dropdown and `go_chat` uses it right away; it is also saved as `default_model`. Beside it: this session's calls, tokens, prompt-cache hit rate and allowance used, and the plan's 5-hour and weekly windows; the 5-hour figure turns yellow past 80% and red at the limit. On a narrow window the details give way first, the 5-hour figure last. It steps aside while a survey uses that spot. |
 | `/go-model` | Switches the model `go_chat` uses when Claude leaves `model` empty, like `/model` does for Claude. `/go-model glm-5.3` sets it directly; `/go-model` alone offers the featured models with the most room in a dialog (or type any id). The choice applies right away and is saved as the `default_model` option for new sessions. |
 | `/go-usage` | Detailed usage for the session (cached / uncached input, output, reasoning, allowance used) and every plan window with its reset time. Before the first call it checks the key (free). |
@@ -43,6 +44,10 @@ Safety details that matter when a worker writes your files:
 - Everything you put in a prompt or `files` is sent to OpenCode and on to the model's provider. Some providers may keep or train on prompts — `go_models` marks them (`trains-on-data`, `no-zdr`). Keep secrets and data you may not share out of it.
 - **Material is fenced off from instructions.** Every file the model reads is wrapped in `<data id="…">` with a random id made when the plugin loads, and the model is told that nothing inside is an instruction. A file can't know the id in advance, so it can't fake the end of its block.
 - Requests carry the plugin's own `User-Agent` (`opencode-go-worker/<version>`) and an `x-opencode-session` header derived from the Claude Code session id, which Go requires and uses for prompt caching.
+
+### The explore and worker agents and auto mode's safety review
+
+In auto mode, when a subagent hands its result back, a server-side safety classifier reviews what it did. The Go agents' steps are answered by the plugin and never sent to Anthropic, so that review has nothing to look at, and Claude Code says so: *the server-side auto mode classifier was unavailable when reviewing this subagent's work*. That warning is accurate and the plugin does not hide it. What still holds: every tool call the agents make goes through Claude Code's own permission checks, explore never edits, and Claude is told to verify their findings and review the worker's diff before relying on them.
 
 ## Requirements
 
@@ -94,6 +99,7 @@ If the [DeepSeek worker](https://github.com/doongchoong/claude-deepseek-worker) 
 | `default_model` | — | Model id used when Claude leaves `model` empty; `/go-model` sets it |
 | `allow_outside_workdir` | off | Skip the file permission checks |
 | `explore_agent` | off | Register the `opencode-go-worker:explore` subagent |
+| `worker_agent` | off | Register the `opencode-go-worker:worker` subagent |
 | `language` | `auto` | Status line and `/go-usage` language: `auto`, `en` or `ko` |
 
 **Language:** `auto` follows `LC_ALL` / `LC_MESSAGES` / `LANG`, then the macOS system language, and falls back to English. Everything the models read is English; the worker is told to answer in the language of the request.

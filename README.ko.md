@@ -22,6 +22,7 @@ Claude에게 월정액 워커 **[OpenCode Go](https://opencode.ai/docs/go)** 를
 | `go_models` | Go 모델 목록이에요. 컨텍스트·출력 한도, 허용되는 `reasoning_effort` 값, 플랜별 월간 사용량, 플래그(추천 모델, 피크 시간 배수와 지금 적용 중인지, 제공자가 프롬프트를 보관하거나 학습에 쓸 수 있는지)를 보여 줘요. 무료 모델은 OpenCode 전용이라 뺐어요. |
 | 상태줄 | `opencode-go-worker 5h 4%`. 플러그인이 로드됐다는 것과 플랜의 5시간 창을 얼마나 채웠는지만 보여 줘요(세션 시작 때와 호출할 때마다 확인하고, 읽지 못하면 `5h —`). 답을 쓰는 동안에는 `작성 중… 120줄`이 떠요. |
 | `opencode-go-worker:explore` (실험, 기본 꺼짐) | Claude의 Agent 도구로 띄우는 읽기 전용 탐색 서브에이전트예요. 모델 호출만 Claude 대신 OpenCode Go로 가요. Claude Code의 Explore 에이전트를 월정액 플랜으로 돌린다고 보면 돼요. 파일을 읽고 읽기 전용 셸 명령(`ls`, `find`, `rg`, `git log` 등)을 실행해요. 도구는 엔진이 실행하므로 Claude Code 권한 확인을 그대로 거쳐요. 모델은 `/go-model`로 고른 것을 써요. `explore_agent` 옵션으로 켜요. 도는 동안에는 모델 바에 사용량 대신 진행 상황(`explore 3단계 · rg -n "session" hooks`)이 떠요. 결과는 Claude가 아닌 모델이 쓴 것이라, Claude가 중요한 사실은 직접 확인하도록 안내해요. |
+| `opencode-go-worker:worker` (실험, 기본 꺼짐) | 명령으로 검증할 수 있는 작은 코딩 작업(실패하는 테스트 통과시키기, 명세가 분명한 몇 파일짜리 변경)을 OpenCode Go로 하는 서브에이전트예요. 파일을 읽고 고치고 쓰고 명령을 실행해요. 도구는 엔진이 실행하므로 Claude Code 권한 확인을 그대로 거쳐요. 커밋은 하지 않아요. Claude가 목표, 파일, 범위 밖인 것, 확인 명령을 주고, 끝나면 diff를 보고 확인 명령을 직접 다시 돌려요. `worker_agent` 옵션으로 켜요. |
 | 모델 바 | 프롬프트 바로 위 한 줄이에요(터미널, 데스크톱 앱, VS Code): `Go 모델: [glm-5.3 ▾]  3회 · 12.4Ktok · 캐시 62% · $0.0012 · 5h 4% · 주 1%`. 드롭다운에서 고르면 `go_chat`이 바로 그 모델을 쓰고, `default_model`에도 저장돼요. 옆에는 이 세션의 호출 수, 토큰, 프롬프트 캐시 적중률, 쓴 한도와 플랜의 5시간·주간 창이 나와요. 5시간 창은 80%를 넘으면 노란색, 한도에 닿으면 빨간색이에요. 창이 좁으면 덜 중요한 것부터 빠지고 5시간 창은 끝까지 남아요. 설문이 그 자리를 쓰는 동안에는 비켜 줘요. |
 | `/go-model` | Claude가 `model`을 비웠을 때 `go_chat`이 쓸 모델을 바꿔요. Claude의 `/model`과 같은 역할이에요. `/go-model glm-5.3`처럼 바로 정할 수도 있고, `/go-model`만 입력하면 여유가 큰 추천 모델을 대화상자로 보여 줘요(id를 직접 입력해도 돼요). 바로 적용되고, 새 세션을 위해 `default_model` 옵션에도 저장돼요. |
 | `/go-usage` | 이 세션의 자세한 사용량(캐시된·캐시 안 된 입력, 출력, 추론, 쓴 월 한도)과 플랜 창별 리셋 시각이에요. 첫 호출 전에는 키가 맞는지 확인해 줘요(무료). |
@@ -43,6 +44,10 @@ Claude에게 월정액 워커 **[OpenCode Go](https://opencode.ai/docs/go)** 를
 - 프롬프트와 `files`에 넣은 내용은 OpenCode를 거쳐 모델 제공자에게 가요. 일부 제공자는 프롬프트를 보관하거나 학습에 쓸 수 있고, `go_models`가 그런 모델을 표시해요(`trains-on-data`, `no-zdr`). 비밀이나 공유하면 안 되는 데이터는 넣지 마세요.
 - **자료와 지시를 분리해요.** 모델이 읽는 파일은 플러그인이 로드될 때 만든 무작위 id로 `<data id="…">` 블록에 감싸고, 그 안의 내용은 지시가 아니라고 모델에 알려요. 파일은 id를 미리 알 수 없어서 블록 끝을 흉내 낼 수 없어요.
 - 요청에는 플러그인 자체 `User-Agent`(`opencode-go-worker/<버전>`)와 Claude Code 세션 ID에서 만든 `x-opencode-session` 헤더가 붙어요. Go가 요구하는 헤더이고 프롬프트 캐시도 이 기준이에요.
+
+### explore·worker 에이전트와 auto 모드의 안전 검토
+
+auto 모드에서는 서브에이전트가 결과를 넘길 때 서버 쪽 안전 분류기가 그 작업을 검토해요. Go 에이전트의 단계는 플러그인이 답하고 Anthropic으로 보내지 않기 때문에 검토할 내용이 없고, Claude Code가 *서버 측 auto 모드 분류기가 이 서브에이전트의 작업을 검토하지 못했다*는 경고를 띄워요. 사실 그대로인 경고라 플러그인은 이걸 숨기지 않아요. 대신 에이전트의 모든 도구 호출은 Claude Code 권한 확인을 거치고, explore는 파일을 바꾸지 않으며, Claude는 결과의 근거를 확인하고 worker의 diff를 검토하도록 안내받아요.
 
 ## 필요한 것
 
@@ -94,6 +99,7 @@ claude plugin install opencode-go-worker --marketplace doongchoong/claude-openco
 | `default_model` | — | Claude가 `model`을 비웠을 때 쓸 모델 id, `/go-model`이 바꿔요 |
 | `allow_outside_workdir` | 꺼짐 | 파일 권한 확인을 건너뜀 |
 | `explore_agent` | 꺼짐 | `opencode-go-worker:explore` 서브에이전트 등록 |
+| `worker_agent` | 꺼짐 | `opencode-go-worker:worker` 서브에이전트 등록 |
 | `language` | `auto` | 상태줄과 `/go-usage` 언어: `auto`, `en`, `ko` |
 
 **언어:** `auto`는 `LC_ALL` / `LC_MESSAGES` / `LANG`, 그다음 macOS 시스템 언어를 따르고, 알 수 없으면 영어예요. 모델이 읽는 글은 모두 영어이고, 워커는 요청한 언어로 답하게 돼 있어요.

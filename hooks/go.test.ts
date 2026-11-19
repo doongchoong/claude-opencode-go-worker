@@ -88,6 +88,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     value: [
       { id: 'ag-explore', type: 'opencode-go-worker:explore', description: 'x', status: 'running' },
       { id: 'ag-other', type: 'Explore', description: 'y', status: 'running' },
+      { id: 'ag-worker', type: 'opencode-go-worker:worker', description: 'z', status: 'running' },
     ],
   }))
   on('session.messages', () => ({
@@ -745,4 +746,63 @@ test('chat: a limit reported inside the stream comes back like a 429, with the r
   expect(refusal(r)).toContain('HTTP 429, in the stream')
   expect(refusal(r)).toContain('limit reached')
   expect(refusal(r)).toContain('5h 100%')
+})
+
+const WORKER_OPTS = { options: { worker_agent: true, default_model: 'glm-5.3-flash' } }
+
+test('worker: registered only with its option, with edit tools and a review-it-yourself guide', WORKER_OPTS, async ($, on) => {
+  on('prompt.compose', () => ({ sections: [] }))
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.agents.map(a => a.name)).toEqual(['worker'])
+  expect(w.agents[0].tools).toEqual(['Read', 'Edit', 'Write', 'Bash'])
+  expect(w.agents[0].prompt).toContain('Never git commit')
+  const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
+  const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
+  expect(guide).toContain('git diff --stat')
+  expect(guide).toContain('server-side safety review')
+  expect(r.sections.map((x: any) => x.id)).not.toContain('opencode-go-worker:explore')
+})
+
+test('worker: its steps go to Go with the worker prompt and edit schemas; the band names it', WORKER_OPTS, async ($, on) => {
+  on('turn.step', async function* () {
+    throw new Error('Claude must not be asked')
+  })
+  const w = world(on, [{ content: 'x' }], {
+    steps: [{ tool: { id: 'e1', name: 'Edit', input: { file_path: '/work/src/register.tsx', old_string: 'a', new_string: 'b' } } }],
+  })
+  await start($)
+  const { chunks, result } = await step($, 'ag-worker')
+  const body = w.exploreBodies[0]
+  expect(body.system).toContain('coding worker')
+  expect(body.max_tokens).toBe(32000)
+  expect(body.tools.map((t: any) => t.name)).toEqual(['Read', 'Edit', 'Write', 'Bash'])
+  expect(body.tools.find((t: any) => t.name === 'Bash').input_schema.properties.timeout).toBeDefined()
+  expect(body.tools.find((t: any) => t.name === 'Edit').input_schema.required).toEqual(['file_path', 'old_string', 'new_string'])
+  expect(result.toolUses[0]).toEqual({ id: 'e1', name: 'Edit', input: { file_path: '/work/src/register.tsx', old_string: 'a', new_string: 'b' } })
+  expect(chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'tool_use' })
+  const ui = await ($.ui as any).mount(bandWith(140))
+  expect((await ui.find({ type: 'Text', text: /5h/ }))?.text).toBe('worker step 1 · Edit register.tsx · 5h 4%')
+  await ui.unmount()
+})
+
+test('worker: with only explore on, a worker-type agent is left to Claude', EXPLORE_OPTS, async ($, on) => {
+  on('turn.step', async function* () {
+    yield { kind: 'text', index: 0, text: 'from claude' }
+    return { turnId: 't1', index: 0, answer: 'from claude', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  const { result } = await step($, 'ag-worker')
+  expect(result.answer).toBe('from claude')
+  expect(w.exploreBodies.length).toBe(0)
+})
+
+test('explore: its Bash schema stays the read-only one', EXPLORE_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  await step($, 'ag-explore')
+  const bash = w.exploreBodies[0].tools.find((t: any) => t.name === 'Bash')
+  expect(bash.description).toContain('read-only')
+  expect(bash.input_schema.properties.timeout).toBeUndefined()
 })
