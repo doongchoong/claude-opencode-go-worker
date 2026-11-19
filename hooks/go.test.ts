@@ -806,3 +806,14 @@ test('explore: its Bash schema stays the read-only one', EXPLORE_OPTS, async ($,
   expect(bash.description).toContain('read-only')
   expect(bash.input_schema.properties.timeout).toBeUndefined()
 })
+
+test('worker and explore are told a refused command is final, and Claude is told who runs the check in auto mode', WORKER_OPTS, async ($, on) => {
+  on('prompt.compose', () => ({ sections: [] }))
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.agents[0].prompt).toContain('report the check as NOT RUN')
+  const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
+  const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
+  expect(guide).toContain('run the check yourself')
+  expect(guide).toContain("don't add one yourself")
+})

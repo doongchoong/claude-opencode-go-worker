@@ -49,6 +49,8 @@ Safety details that matter when a worker writes your files:
 
 In auto mode, when a subagent hands its result back, a server-side safety classifier reviews what it did. The Go agents' steps are answered by the plugin and never sent to Anthropic, so that review has nothing to look at, and Claude Code says so: *the server-side auto mode classifier was unavailable when reviewing this subagent's work*. That warning is accurate and the plugin does not hide it. What still holds: every tool call the agents make goes through Claude Code's own permission checks, explore never edits, and Claude is told to verify their findings and review the worker's diff before relying on them.
 
+The same gap affects commands. In auto mode the classifier also decides whether a command may run, and it gives no verdict for a step it never saw, so the Go agents can only run commands your permission rules allow outright. Reading and editing files works; a check command such as `python3 -m unittest` is refused, and the worker reports its check as NOT RUN while Claude runs it instead. To let the worker run its own check in a project, add an allow rule for that command to the project's settings, for example `"permissions": { "allow": ["Bash(npm test *)"] }` in `.claude/settings.local.json`. Outside auto mode you are asked as usual.
+
 ## Requirements
 
 - [Claude Code](https://claude.com/claude-code) — terminal, the desktop app's Code tab, or an IDE extension

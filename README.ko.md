@@ -49,6 +49,8 @@ Claude에게 월정액 워커 **[OpenCode Go](https://opencode.ai/docs/go)** 를
 
 auto 모드에서는 서브에이전트가 결과를 넘길 때 서버 쪽 안전 분류기가 그 작업을 검토해요. Go 에이전트의 단계는 플러그인이 답하고 Anthropic으로 보내지 않기 때문에 검토할 내용이 없고, Claude Code가 *서버 측 auto 모드 분류기가 이 서브에이전트의 작업을 검토하지 못했다*는 경고를 띄워요. 사실 그대로인 경고라 플러그인은 이걸 숨기지 않아요. 대신 에이전트의 모든 도구 호출은 Claude Code 권한 확인을 거치고, explore는 파일을 바꾸지 않으며, Claude는 결과의 근거를 확인하고 worker의 diff를 검토하도록 안내받아요.
 
+같은 이유로 명령 실행에도 제약이 있어요. auto 모드에서는 명령을 실행해도 되는지도 이 분류기가 판단하는데, 본 적 없는 단계에는 판정을 주지 않아요. 그래서 Go 에이전트는 권한 허용 규칙에 이미 들어 있는 명령만 실행할 수 있어요. 파일 읽기와 수정은 되지만 `python3 -m unittest` 같은 확인 명령은 거절되고, worker는 확인을 NOT RUN으로 보고하며 Claude가 대신 돌려요. 프로젝트에서 worker가 직접 확인 명령을 돌리게 하려면 그 명령의 허용 규칙을 프로젝트 설정에 넣으세요. 예: `.claude/settings.local.json`에 `"permissions": { "allow": ["Bash(npm test *)"] }`. auto 모드가 아니면 평소처럼 물어봐요.
+
 ## 필요한 것
 
 - [Claude Code](https://claude.com/claude-code): 터미널, 데스크톱 앱의 Code 탭, IDE 확장 중 하나
