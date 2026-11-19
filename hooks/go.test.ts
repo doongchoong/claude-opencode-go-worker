@@ -3,18 +3,25 @@ import { expect, test } from 'claude-code/testing'
 const CHAT = 'mcp__opencode-go-worker__go_chat'
 const MODELS = 'mcp__opencode-go-worker__go_models'
 
-type Reply = { content: string; finish?: string; usage?: Record<string, unknown>; status?: number; error?: string; cut?: boolean }
+type Reply = { content: string; finish?: string; usage?: Record<string, unknown>; status?: number; error?: string; cut?: boolean; streamError?: unknown }
 
 type WorldOptions = {
   disabled?: boolean
   keyFile?: boolean
   limitsStatus?: number
   rolling?: number
+  // the 5-hour percent the usage endpoint gives on each lookup, in order (then `rolling`)
+  rollingSeq?: number[]
   files?: Record<string, string>
   env?: Record<string, string>
   // The answer in the question dialog (undefined = dismissed)
   answer?: string
+  // explore: what Go's Anthropic endpoint streams per step, and the agent's conversation
+  steps?: ExploreStep[]
+  agentMessages?: unknown[]
 }
+
+type ExploreStep = { text?: string; tool?: { id: string; name: string; input: unknown }; thinking?: string; status?: number; error?: string; streamError?: unknown }
 
 const MODEL_LIST = {
   object: 'list',
@@ -68,8 +75,27 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   const statuses: (string | undefined)[] = []
   const written: Record<string, string> = {}
   const files: Record<string, string> = { ...opts.files }
+  let limitsLookups = 0
 
   const commands: string[] = []
+  const agents: any[] = []
+  const exploreBodies: any[] = []
+  on('agent.register', (_: unknown, e: any) => {
+    agents.push(e)
+    return { value: { agent: `opencode-go-worker:${e.name}` } }
+  })
+  on('agent.list', () => ({
+    value: [
+      { id: 'ag-explore', type: 'opencode-go-worker:explore', description: 'x', status: 'running' },
+      { id: 'ag-other', type: 'Explore', description: 'y', status: 'running' },
+    ],
+  }))
+  on('session.messages', () => ({
+    value: opts.agentMessages ?? [
+      { role: 'user', content: [{ type: 'text', text: 'Where is DATA_ID defined?' }] },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'secret', signature: 'sig' }, { type: 'text', text: 'Looking.' }] },
+    ],
+  }))
   const configSets: { key: string; value: unknown }[] = []
   const questions: { question: string; options: string[] }[] = []
   on('command.register', (_: unknown, e: any) => {
@@ -132,7 +158,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
       const w = (percent: number, resetsAt: string) => ({ status: 'ok', percent, resetsAt })
       const v = {
         usage: {
-          rolling: w(opts.rolling ?? 4, '2026-11-19T21:10:37.000Z'),
+          rolling: w(opts.rollingSeq?.[limitsLookups++] ?? opts.rolling ?? 4, '2026-11-19T21:10:37.000Z'),
           weekly: w(1, '2026-11-23T00:00:00.000Z'),
           monthly: w(0, '2026-12-19T16:01:58.000Z'),
         },
@@ -146,6 +172,43 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     if (e.argv[0] !== '/usr/bin/curl') return { value: { code: 1, signal: null } }
     configs.push(e.input)
     argvs.push(e.argv)
+    if (e.input.includes('anthropic/v1/messages')) {
+      const line = e.input.split('\n').find((l: string) => l.startsWith('data-binary = '))
+      exploreBodies.push(JSON.parse(JSON.parse(line.slice('data-binary = '.length))))
+      const st = (opts.steps ?? [{ text: 'done' }])[exploreBodies.length - 1] ?? { text: 'done' }
+      if (st.status && st.status >= 400) {
+        yield { stream: 'stdout', text: `${st.error ?? '{"type":"error"}'}\n[[go-worker-http ${st.status}]]` }
+        return { value: { code: 0, signal: null } }
+      }
+      const ev = (x: unknown) => `event: x\ndata: ${JSON.stringify(x)}\n\n`
+      let out = ev({ type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 0 } } })
+      if (st.streamError) {
+        yield { stream: 'stdout', text: out + ev({ type: 'error', error: st.streamError }) + '\n[[go-worker-http 200]]' }
+        return { value: { code: 0, signal: null } }
+      }
+      let i = 0
+      if (st.thinking) {
+        out += ev({ type: 'content_block_start', index: i, content_block: { type: 'thinking', thinking: '' } })
+        out += ev({ type: 'content_block_delta', index: i, delta: { type: 'thinking_delta', thinking: st.thinking } })
+        i++
+      }
+      if (st.text) {
+        out += ev({ type: 'content_block_start', index: i, content_block: { type: 'text', text: '' } })
+        out += ev({ type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: st.text } })
+        i++
+      }
+      if (st.tool) {
+        out += ev({ type: 'content_block_start', index: i, content_block: { type: 'tool_use', id: st.tool.id, name: st.tool.name, input: {} } })
+        const json = JSON.stringify(st.tool.input)
+        out += ev({ type: 'content_block_delta', index: i, delta: { type: 'input_json_delta', partial_json: json.slice(0, 5) } })
+        out += ev({ type: 'content_block_delta', index: i, delta: { type: 'input_json_delta', partial_json: json.slice(5) } })
+      }
+      const usage = { input_tokens: 400, output_tokens: 30, cache_read_input_tokens: 100, opencode: { billing_source: 'go', allowance: 0.0001, tokens: { input: 300, output: 30, reasoning: 0, cache_read: 100, cache_write_5m: 0, cache_write_1h: 0 } } }
+      out += ev({ type: 'message_delta', delta: { stop_reason: st.tool ? 'tool_use' : 'end_turn' }, usage })
+      out += ev({ type: 'message_stop' }) + '\n[[go-worker-http 200]]'
+      yield { stream: 'stdout', text: out }
+      return { value: { code: 0, signal: null } }
+    }
     const line = e.input.split('\n').find((l: string) => l.startsWith('data-binary = '))
     const body = JSON.parse(JSON.parse(line.slice('data-binary = '.length)))
     sent.push(body)
@@ -155,6 +218,10 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
       return { value: { code: 0, signal: null } }
     }
     const chunk = (x: unknown) => `data: ${JSON.stringify(x)}\n\n`
+    if (r.streamError) {
+      yield { stream: 'stdout', text: chunk({ error: r.streamError }) + '\n[[go-worker-http 200]]' }
+      return { value: { code: 0, signal: null } }
+    }
     const half = Math.ceil(r.content.length / 2)
     yield { stream: 'stdout', text: chunk({ model: body.model, choices: [{ delta: { reasoning_content: 'SECRET THOUGHTS' } }] }) }
     for (const piece of [r.content.slice(0, half), r.content.slice(half)]) {
@@ -175,7 +242,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     }
     return { value: { code: 0, signal: null } }
   })
-  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions }
+  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions, agents, exploreBodies }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
@@ -503,4 +570,179 @@ test('the 5-hour window turns yellow past 80% in the band', async ($, on) => {
   const part = await ui.find({ type: 'Text', text: /^5h 85%$/ })
   expect(part?.props.color).toBe('warning')
   await ui.unmount()
+})
+
+const EXPLORE_OPTS = { options: { explore_agent: true, default_model: 'glm-5.3-flash' } }
+
+// Runs one model step of a loop and collects what streamed
+async function step($: any, agentId: string | undefined, index = 0) {
+  const chunks: any[] = []
+  const s = $.turn.step({ turnId: 't1', index, model: 'claude-opus-5-5', messageCount: 2, ...(agentId ? { agentId } : {}) })
+  let r = await s.next()
+  while (!r.done) {
+    chunks.push(r.value)
+    r = await s.next()
+  }
+  return { chunks, result: r.value }
+}
+
+test('explore: registered only when the option is on, read-only tools, with a guide for Claude', EXPLORE_OPTS, async ($, on) => {
+  on('prompt.compose', () => ({ sections: [] }))
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.agents.length).toBe(1)
+  expect(w.agents[0].name).toBe('explore')
+  expect(w.agents[0].tools).toEqual(['Read', 'Bash'])
+  expect(w.agents[0].prompt).toContain('Never create, change, move or delete')
+  const r: any = await ($ as any).prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
+  expect(r.sections.map((x: any) => x.id)).toContain('opencode-go-worker:explore')
+})
+
+test('explore: off by default', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.agents.length).toBe(0)
+})
+
+test('explore: a step is answered from Go (thinking dropped, tool call streamed whole) and never reaches Claude', EXPLORE_OPTS, async ($, on) => {
+  let claudeAsked = 0
+  on('turn.step', async function* () {
+    claudeAsked++
+    yield { kind: 'text', index: 0, text: 'from claude' }
+    return { turnId: 't1', index: 0, answer: 'from claude', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const w = world(on, [{ content: 'x' }], {
+    steps: [{ thinking: 'hmm', text: 'Searching.', tool: { id: 'tool-1', name: 'Bash', input: { command: 'rg -n DATA_ID', description: 'find it' } } }],
+  })
+  await start($)
+  const { chunks, result } = await step($, 'ag-explore')
+
+  expect(claudeAsked).toBe(0)
+  const body = w.exploreBodies[0]
+  expect(body.model).toBe('glm-5.3-flash')
+  expect(body.system).toContain('read-only codebase explorer')
+  expect(body.tools.map((t: any) => t.name)).toEqual(['Read', 'Bash'])
+  // thinking blocks (Claude's signatures) are dropped from the history sent to Go
+  expect(JSON.stringify(body.messages)).not.toContain('signature')
+  expect(w.configs.at(-1)).toContain('header = "anthropic-version: 2023-06-01"')
+  expect(w.configs.at(-1)).toContain('header = "x-opencode-session: ccgo-sess-1"')
+
+  expect(chunks.filter(c => c.kind === 'text').map(c => c.text).join('')).toBe('Searching.')
+  expect(chunks.some(c => c.kind === 'thinking')).toBe(false)
+  expect(chunks.find(c => c.kind === 'tool')).toMatchObject({ id: 'tool-1', name: 'Bash' })
+  expect(chunks.filter(c => c.kind === 'input').map(c => c.json).join('')).toBe('{"command":"rg -n DATA_ID","description":"find it"}')
+  expect(chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'tool_use' })
+  expect(result.toolUses).toEqual([{ id: 'tool-1', name: 'Bash', input: { command: 'rg -n DATA_ID', description: 'find it' } }])
+  expect(result.stopReason).toBe('tool_use')
+  // the step counts toward the session's usage in the band
+  expect(w.statuses.at(-1)).toBe('5h 4%')
+})
+
+test('explore: other loops pass through to Claude', EXPLORE_OPTS, async ($, on) => {
+  on('turn.step', async function* () {
+    yield { kind: 'text', index: 0, text: 'from claude' }
+    return { turnId: 't1', index: 0, answer: 'from claude', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  for (const id of [undefined, 'ag-other']) {
+    const { result } = await step($, id)
+    expect(result.answer).toBe('from claude')
+  }
+  expect(w.exploreBodies.length).toBe(0)
+})
+
+test('explore: SubagentHandback is offered only when the conversation asks for it', EXPLORE_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'x' }], {
+    agentMessages: [{ role: 'user', content: [{ type: 'text', text: 'Find X. <system-reminder>call SubagentHandback({message})</system-reminder>' }] }],
+  })
+  await start($)
+  await step($, 'ag-explore')
+  expect(w.exploreBodies[0].tools.map((t: any) => t.name)).toEqual(['Read', 'Bash', 'SubagentHandback'])
+})
+
+test('explore: a 429 ends the agent with the reset times instead of falling back to Claude', EXPLORE_OPTS, async ($, on) => {
+  let claudeAsked = 0
+  on('turn.step', async function* () {
+    claudeAsked++
+    return { turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  world(on, [{ content: 'x' }], { steps: [{ status: 429, error: '{"error":"limit"}' }], rolling: 100 })
+  await start($)
+  const { chunks, result } = await step($, 'ag-explore')
+  expect(claudeAsked).toBe(0)
+  const text = chunks.filter(c => c.kind === 'text').map(c => c.text).join('')
+  expect(text).toContain('HTTP 429')
+  expect(text).toContain('5h 100%')
+  expect(result.stopReason).toBe('end_turn')
+})
+
+test('explore: with no Go model set the agent says so and stops', { options: { explore_agent: true } }, async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  const { chunks } = await step($, 'ag-explore')
+  expect(chunks.find(c => c.kind === 'text')?.text).toContain('No OpenCode Go model is set')
+  expect(w.exploreBodies.length).toBe(0)
+})
+
+test('explore: the band shows the run\'s progress while it works, then goes back to usage', EXPLORE_OPTS, async ($, on) => {
+  on('turn.complete', (_: unknown, e: any) => ({ text: '', ...(e.usage ? { usage: e.usage } : {}) }))
+  world(on, [{ content: 'x' }], {
+    steps: [{ tool: { id: 't1', name: 'Bash', input: { command: 'rg -n "x-opencode-session"  hooks', description: 'search' } } }, { text: 'Found it.' }],
+  })
+  await start($)
+  const bandText = async () => {
+    const ui = await ($.ui as any).mount(bandWith(140))
+    const t = (await ui.find({ type: 'Text', text: /5h/ }))?.text
+    await ui.unmount()
+    return t
+  }
+  await step($, 'ag-explore', 0)
+  expect(await bandText()).toBe('explore step 1 · rg -n "x-opencode-session" hooks · 5h 4%')
+  await step($, 'ag-explore', 1)
+  // the final answer ends the run: usage is back (2 Go calls from this agent)
+  expect(await bandText()).toBe('2 calls · 860tok · cache 25% · $0.0002 · 5h 4% · wk 1%')
+})
+
+test('explore: a run that ends early (turn.complete) leaves the band', EXPLORE_OPTS, async ($, on) => {
+  on('turn.complete', () => ({ text: '' }))
+  world(on, [{ content: 'x' }], { steps: [{ tool: { id: 't1', name: 'Read', input: { file_path: '/work/a/b/register.tsx' } } }] })
+  await start($)
+  await step($, 'ag-explore', 0)
+  const ui = await ($.ui as any).mount(bandWith(140))
+  expect((await ui.find({ type: 'Text', text: /5h/ }))?.text).toBe('explore step 1 · Read register.tsx · 5h 4%')
+  await ui.unmount()
+  await ($ as any).turn.complete({ turnId: 't1', agentId: 'ag-explore', reason: 'aborted', answer: '', durationMs: 1, isAborted: true })
+  const after = await ($.ui as any).mount(bandWith(140))
+  expect((await after.find({ type: 'Text', text: /5h/ }))?.text).not.toContain('explore')
+  await after.unmount()
+})
+
+test('explore: a 429 refreshes the windows the status line shows', EXPLORE_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'x' }], { steps: [{ status: 429, error: '{"error":"limit"}' }], rollingSeq: [40, 100] })
+  await start($)
+  expect(w.statuses.at(-1)).toBe('5h 40%')
+  await step($, 'ag-explore')
+  expect(w.statuses.at(-1)).toBe('5h 100%')
+})
+
+test('explore: a limit Go reports inside the stream is handled like a 429', EXPLORE_OPTS, async ($, on) => {
+  world(on, [{ content: 'x' }], { steps: [{ streamError: { type: 'rate_limit_error', message: 'slow down' } }], rolling: 100 })
+  await start($)
+  const { chunks, result } = await step($, 'ag-explore')
+  const text = chunks.filter(c => c.kind === 'text').map(c => c.text).join('')
+  expect(text).toContain('HTTP 429')
+  expect(text).toContain('rate_limit_error')
+  expect(text).toContain('5h 100%')
+  expect(text).not.toContain('cut off')
+  expect(result.stopReason).toBe('end_turn')
+})
+
+test('chat: a limit reported inside the stream comes back like a 429, with the reset times', async ($, on) => {
+  world(on, [{ content: '', streamError: { code: 429, message: 'Rate limit exceeded' } }], { rolling: 100 })
+  await start($)
+  const r: any = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
+  expect(refusal(r)).toContain('HTTP 429, in the stream')
+  expect(refusal(r)).toContain('limit reached')
+  expect(refusal(r)).toContain('5h 100%')
 })

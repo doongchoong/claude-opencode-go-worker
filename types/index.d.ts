@@ -18,11 +18,14 @@ export type Usage = {
 export type Window = { status: string; percent: number; resetsAt: string }
 export type Limits = { rolling?: Window; weekly?: Window; monthly?: Window; checkedAt: number } | null
 
+// Explore agents at work, by agent id: the step they are on and what they are doing
+export type Exploring = Record<string, { step: number; doing: string }>
+
 // The language people read, decided once per session for the `language` option it was decided under
 export type UiLang = { option: string; lang: 'en' | 'ko' } | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'opencode-go-worker': { totals: Shaped<Usage>; limits: Shaped<Limits>; uiLang: Shaped<UiLang>; model: Shaped<string | null> }
+    'opencode-go-worker': { totals: Shaped<Usage>; limits: Shaped<Limits>; uiLang: Shaped<UiLang>; model: Shaped<string | null>; exploring: Shaped<Exploring> }
   }
 }

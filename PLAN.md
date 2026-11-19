@@ -73,8 +73,8 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 1. ~~**스파이크 (curl)**~~ (완료): 실제 키로 chat/completions · messages 스트리밍, usage 필드, `/zen/go/v1/usage`, `/v1/models` 응답 확인. 헤더(인증, 세션) 확정.
 2. ~~**v0.1 본체**~~ (완료): 키/설정 로딩, `go_chat`, `go_models`, 상태줄, `/go-usage`, GUIDE.
 3. ~~**테스트 + README**~~ (영어/한국어, 완료)
-4. **v0.2 스파이크**: `turn.step`에서 `next` 없이 만든 응답이 transcript에 tool_use로 남고 실제 실행되는지. 막히면 explore 아이디어 폐기.
-5. **v0.2 explore 서브에이전트**: thinking 블록 제거, 스키마 첨부, usage를 `stop` 청크로 보고.
+4. ~~**v0.2 스파이크**~~ (완료, spike/FINDINGS.md C절): `turn.step`에서 `next` 없이 만든 응답이 transcript에 tool_use로 남고 실제 실행되는지. 막히면 explore 아이디어 폐기.
+5. ~~**v0.2 explore 서브에이전트**~~ (구현, 실제 세션 확인 대기): thinking 블록 제거, 스키마 첨부, usage를 `stop` 청크로 보고.
 6. (나중) deepseek-worker 정리: batch/agent 정리, explore 서브에이전트를 DeepSeek에도 적용 검토.
 
 ## 5. 리스크

@@ -90,3 +90,31 @@ allowance 0.00060675 → 0.00021207 (약 1/3).
 - 429 모양은 미확인 — 본체에서 상태코드·본문을 그대로 전하고 usage 엔드포인트의 `resetsAt`을 붙여 방어적으로 처리.
 
 1단계 완료.
+
+## C. v0.2 explore 스파이크 (2026-11-20)
+
+코드: [spike/explore/register.ts](explore/register.ts) (세션 dev-mod `go-explore-spike`로 로드해서 실행).
+Read만 쓰는 `go-explore-spike:explore` 에이전트를 등록하고, 그 에이전트의 `turn.step`만 `next` 없이 가로채
+OpenCode Go `/anthropic/v1/messages`(glm-5.3-flash, 비스트리밍 `$.http.fetch`)로 보낸 뒤 `text`/`tool`/`input`/`stop` 청크로 답했다.
+
+과제: "plugin.json을 읽고 version과 userConfig 옵션 이름을 말해라" → **정답**(0.1.4, 옵션 5개).
+
+### 확정
+- **훅이 만든 응답을 엔진이 받아들인다.** 4스텝(tool_use 3 + end_turn 1), Claude 요청 없음.
+  tool_use id가 `chatcmpl-tool-…`(Go 변환기 형식, Claude는 `toolu_…`) → 모든 스텝이 Go에서 왔다.
+- **엔진이 tool_use를 실제로 실행하고 결과를 다음 스텝 messages에 넣어 루프를 돈다.** Read 2회 실행.
+- `$.session.messages({ agentId, as: 'api' })`가 서브에이전트 대화를 Messages 형식으로 준다. thinking 블록 제거 후 Go가 그대로 받음.
+
+### 새로 알게 된 것 / 본체에서 처리할 것
+- **`SubagentHandback` 도구.** 엔진은 서브에이전트가 이 도구로 최종 보고를 넘기길 기대한다.
+  스파이크는 Read 스키마만 보냈는데도 모델이 (시스템 리마인더를 보고) 이 이름으로 호출했고 엔진이 받아들였다.
+  본체는 이 도구 스키마도 함께 보내야 안정적이다. `$.tool.list()`에는 스키마가 없으므로 직접 정의.
+- **도구 스키마는 플러그인이 들고 있어야 한다.** `$.tool.list()`는 이름·설명만 준다.
+- **데스크톱 세션에는 Grep/Glob이 없다.** 서브에이전트 도구는 부모 세션 도구 안에서만 허용 → 이 환경에선 Read만.
+  넓은 탐색을 하려면 deepseek-worker처럼 glob/grep을 플러그인 도구로 직접 제공하는 방안 검토.
+- **transcript의 model 표시는 `claude-opus-5-5`.** 엔진이 스텝 모델로 기록한다. 사용량은 `stop` 청크의 usage로 넘겼지만
+  비용/표시가 Claude 모델 기준으로 잡히는지 본체에서 확인 필요 (subagent_tokens 3227로 집계됨).
+- 비스트리밍 `$.http.fetch`는 30초 제한 → 본체는 curl 스트리밍으로.
+- 이 실행 중 서버 측 안전 분류기가 서브에이전트 작업을 검토하지 못했다는 알림이 왔다(읽기 전용이라 영향 없음).
+
+결론: **v0.2 explore는 가능.** 막히는 지점 없음.
