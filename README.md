@@ -20,7 +20,9 @@ You ──▶ Claude (plans, reviews) ──▶ go_chat ──▶ OpenCode Go AP
 | --- | --- |
 | `go_chat` | One task. `files` are read by the plugin and prepended, so Claude doesn't copy file contents into the call. `output_path` writes the answer straight to a file and returns only path and line count. Every result ends with a usage line and a limits line (5-hour, weekly and monthly windows). Several independent jobs: Claude calls it in parallel. |
 | `go_models` | The Go model lineup: context and output limits, allowed `reasoning_effort` values, how much each plan covers per month, and flags — featured, peak-hour multiplier (and whether it applies right now), whether the provider may keep or train on prompts. Free models are left out (they are for OpenCode itself). |
-| Status line | `opencode-go-worker 3 calls 12.4Ktok cache 62% · 5h 4% wk 1%` — calls, tokens and prompt-cache hit rate for the session, plus the plan's 5-hour and weekly windows. While a reply is being written it shows `writing… 120 lines`. |
+| Status line | `opencode-go-worker 5h 4%` — the plugin is loaded, and how full the plan's 5-hour window is (looked up when the session starts and after every call; `5h —` when it can't be read). While a reply is being written it shows `writing… 120 lines`. |
+| Model bar | One line above the prompt (terminal, desktop app, VS Code): `Go model: [glm-5.3 ▾]  3 calls · 12.4Ktok · cache 62% · $0.0012 · 5h 4% · wk 1%`. Pick a model in the dropdown and `go_chat` uses it right away; it is also saved as `default_model`. Beside it: this session's calls, tokens, prompt-cache hit rate and allowance used, and the plan's 5-hour and weekly windows; the 5-hour figure turns yellow past 80% and red at the limit. On a narrow window the details give way first, the 5-hour figure last. It steps aside while a survey uses that spot. |
+| `/go-model` | Switches the model `go_chat` uses when Claude leaves `model` empty, like `/model` does for Claude. `/go-model glm-5.3` sets it directly; `/go-model` alone offers the featured models with the most room in a dialog (or type any id). The choice applies right away and is saved as the `default_model` option for new sessions. |
 | `/go-usage` | Detailed usage for the session (cached / uncached input, output, reasoning, allowance used) and every plan window with its reset time. Before the first call it checks the key (free). |
 | Guidance for Claude | When to delegate and when to do it itself, when to stop using Go (5-hour window above 80%, or a limit error), and how to keep Go's prompt cache warm — added to Claude's system prompt. |
 
@@ -70,7 +72,7 @@ If the plugin option is empty, the key is read from `~/.config/opencode-go/api_k
 
 ## Using it
 
-Set a **default model** in `/plugin` (option `default_model`) — the lineup changes often, so the plugin doesn't pick one for you. Without one, Claude calls `go_models` and chooses per task.
+Pick a **default model** in the dropdown above the prompt or with `/go-model` (or the `default_model` option in `/plugin`) — the lineup changes often, so the plugin doesn't pick one for you. Without one, Claude calls `go_models` and chooses per task.
 
 Then just talk to Claude. It decides on its own when delegating is cheaper than writing it itself, and you can always be explicit:
 
@@ -88,7 +90,7 @@ If the [DeepSeek worker](https://github.com/doongchoong/claude-deepseek-worker) 
 | Plugin option | Default | |
 | --- | --- | --- |
 | `api_key` | — | Console key, kept in secure storage |
-| `default_model` | — | Model id used when Claude leaves `model` empty |
+| `default_model` | — | Model id used when Claude leaves `model` empty; `/go-model` sets it |
 | `allow_outside_workdir` | off | Skip the file permission checks |
 | `language` | `auto` | Status line and `/go-usage` language: `auto`, `en` or `ko` |
 
@@ -107,7 +109,7 @@ The windows are whole percentages, so a few small calls may not move them. `/go-
 ```
 .claude-plugin/plugin.json       plugin manifest and options
 .claude-plugin/marketplace.json  makes this repo installable with /plugin install
-hooks/register.ts                the tools, Claude's guidance, status line, /go-usage
+hooks/register.tsx               the tools, Claude's guidance, status line, model dropdown, /go-model, /go-usage
 hooks/go.test.ts                 tests with the API, files and env mocked (claude plugin test .)
 types/index.d.ts                 the shape of the plugin's state (usage, limits, language)
 spike/                           the API spike (spike.sh) and what it found (FINDINGS.md)

@@ -12,6 +12,8 @@ type WorldOptions = {
   rolling?: number
   files?: Record<string, string>
   env?: Record<string, string>
+  // The answer in the question dialog (undefined = dismissed)
+  answer?: string
 }
 
 const MODEL_LIST = {
@@ -67,7 +69,24 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   const written: Record<string, string> = {}
   const files: Record<string, string> = { ...opts.files }
 
-  on('command.register', () => ({ value: { command: 'go-usage' } }))
+  const commands: string[] = []
+  const configSets: { key: string; value: unknown }[] = []
+  const questions: { question: string; options: string[] }[] = []
+  on('command.register', (_: unknown, e: any) => {
+    commands.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('config.set', (_: unknown, e: any) => {
+    configSets.push({ key: e.key, value: e.value })
+    return { value: e.value }
+  })
+  on('tool.call', (_: unknown, e: any, next: any) => {
+    if (e.tool !== 'AskUserQuestion') return next(e)
+    const q = e.questions[0]
+    questions.push({ question: q.question, options: (q.options ?? []).map((o: any) => o.label ?? o) })
+    if (opts.answer === undefined) return { deny: 'dismissed' }
+    return { result: { questions: e.questions, answers: { [q.question]: opts.answer } }, text: `answered ${opts.answer}` }
+  })
   on('tool.register', (_: unknown, e: any) => ({ value: { tool: `mcp__opencode-go-worker__${e.name}` } }))
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -83,6 +102,8 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   if (opts.keyFile !== false) disk.add('/home/u/.config/opencode-go/api_key')
   on('session.cwd', () => ({ value: '/work' }))
   on('tool.check', (_: unknown, e: any) => {
+    // Only file reads and writes are judged here; the question dialog is allowed
+    if (e.tool !== 'Read' && e.tool !== 'Write') return { decision: 'allow' }
     const path: string = e.input.file_path ?? ''
     if (path.endsWith('/.env')) return { decision: 'deny', reason: 'rule Read(.env)' }
     if (e.tool === 'Read' && path.startsWith('/work/')) return { decision: 'allow' }
@@ -154,7 +175,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     }
     return { value: { code: 0, signal: null } }
   })
-  return { sent, configs, argvs, fetched, statuses, written, files }
+  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
@@ -181,7 +202,7 @@ test('chat: Bearer, session header and our User-Agent; reasoning dropped; usage 
   expect(text(r)).not.toContain('SECRET THOUGHTS')
   expect(text(r)).toContain('pong\n\n[usage: glm-5.3-flash, in=751 cache_read=3264 out=3 reasoning=0 allowance=$0.000212]')
   expect(text(r)).toContain('[limits: 5h 4% (resets 2026-11-19 21:10 UTC) · week 1% (resets 2026-11-23 00:00 UTC) · month 0%')
-  expect(w.statuses.at(-1)).toBe('1 call 4.0Ktok cache 81% · 5h 4% wk 1%')
+  expect(w.statuses.at(-1)).toBe('5h 4%')
 })
 
 test('chat: with no model and no default_model, Claude is asked to pick one', async ($, on) => {
@@ -261,7 +282,7 @@ test('chat: when the usage endpoint fails the result says so and the status line
   await start($)
   const r = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
   expect(text(r)).toContain('[limits: unknown')
-  expect(w.statuses.at(-1)).toBe('1 call 4.0Ktok cache 81%')
+  expect(w.statuses.at(-1)).toBe('5h —')
 })
 
 test('go_models: works without a key, hides free models, shows effort and flags', async ($, on) => {
@@ -346,7 +367,140 @@ test('usage adds up across calls and the status line survives a reload of the se
   await start($)
   await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
   await ($.tool.call as any)({ tool: CHAT, prompt: 'y', model: 'glm-5.3-flash' })
-  expect(w.statuses.at(-1)).toBe('2 calls 8.0Ktok cache 81% · 5h 4% wk 1%')
+  expect(w.statuses.at(-1)).toBe('5h 4%')
   await start($)
-  expect(w.statuses.at(-1)).toBe('2 calls 8.0Ktok cache 81% · 5h 4% wk 1%')
+  expect(w.statuses.at(-1)).toBe('5h 4%')
+})
+
+const goModel = async ($: any, args = '') => (await $.command.run({ command: 'go-model', args } as any)).text as string
+
+test('/go-model <id> switches the model go_chat uses, saves default_model ', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.commands).toContain('go-model')
+  expect(await goModel($, 'glm-5.3-flash')).toContain('OpenCode Go model: glm-5.3-flash (saved as default_model')
+  expect(w.configSets).toEqual([{ key: 'opencode-go-worker.default_model', value: 'glm-5.3-flash' }])
+
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x' })
+  expect(w.sent[0].model).toBe('glm-5.3-flash')
+})
+
+test('/go-model refuses unknown and free models and keeps the current one', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(await goModel($, 'nope')).toContain('Unknown OpenCode Go model: nope')
+  expect(await goModel($, 'beam-free')).toContain('free model')
+  expect(w.configSets.length).toBe(0)
+})
+
+test('/go-model with no id asks, offering featured models with the most room first; dismissing changes nothing', async ($, on) => {
+  const w = world(on, [{ content: 'x' }], { answer: 'deepseek-v4.1-flash' })
+  await start($)
+  expect(await goModel($)).toContain('OpenCode Go model: deepseek-v4.1-flash')
+  expect(w.questions[0]!.options).toEqual(['deepseek-v4.1-flash', 'glm-5.3-flash'])
+})
+
+test('/go-model with no answer lists the models instead', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  const out = await goModel($)
+  expect(out).toContain('/go-model <id>')
+  expect(out).toContain('kimi-k2.7-code')
+  expect(w.configSets.length).toBe(0)
+})
+
+test('the default_model option is used when model is empty', { options: { default_model: 'kimi-k2.7-code' } }, async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x' })
+  expect(w.sent[0].model).toBe('kimi-k2.7-code')
+})
+
+test('the status line shows only the 5-hour window, from the start; without a key it shows 5h —', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  expect(w.statuses.at(-1)).toBe('5h 4%')
+})
+
+test('without a key the status line still shows the plugin is loaded', async ($, on) => {
+  const w = world(on, [{ content: 'x' }], { keyFile: false })
+  await start($)
+  expect(w.statuses.at(-1)).toBe('5h —')
+})
+
+const BAND = (surface: 'terminal' | 'desktop' | 'vscode' | 'mobile', hasSurvey = false) =>
+  ({
+    plugin: 'opencode-go-worker',
+    component: 'AbovePrompt',
+    surface,
+    props: { hasSurvey, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  }) as any
+
+test('the band above the prompt shows a model dropdown; picking switches the model and saves it', async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
+    const ui = await ($.ui as any).mount(BAND(surface))
+    const select = await ui.find({ type: 'Select' })
+    expect(select?.key).toBe('go-model')
+    expect(select?.props.label).toBe('Go model')
+    // featured first by monthly room, then the rest; free models left out; a "pick" entry while none is set
+    expect((select?.props.options as any[]).map(o => o.value)).toEqual(['', 'deepseek-v4.1-flash', 'glm-5.3-flash', 'kimi-k2.7-code'])
+    await ui.unmount()
+  }
+  const ui = await ($.ui as any).mount(BAND('desktop'))
+  await ui.select({ key: 'go-model', value: 'glm-5.3-flash' })
+  await ui.unmount()
+  expect(w.configSets).toEqual([{ key: 'opencode-go-worker.default_model', value: 'glm-5.3-flash' }])
+
+  const again = await ($.ui as any).mount(BAND('desktop'))
+  const select = await again.find({ type: 'Select' })
+  expect(select?.props.value).toBe('glm-5.3-flash')
+  expect((select?.props.options as any[])[0].value).toBe('deepseek-v4.1-flash') // no "pick" entry once set
+  await again.unmount()
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x' })
+  expect(w.sent[0].model).toBe('glm-5.3-flash')
+})
+
+test('the band steps aside for a survey, on mobile, and when the plugin is off', async ($, on) => {
+  world(on, [{ content: 'x' }], { disabled: true })
+  await start($)
+  for (const b of [BAND('desktop', true), BAND('mobile'), BAND('terminal')]) {
+    const ui = await ($.ui as any).mount(b)
+    expect(await ui.find({ type: 'Select' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+const bandWith = (columns: number) => {
+  const b = BAND('desktop')
+  return { ...b, props: { ...b.props, bodyColumns: columns } }
+}
+
+test('the band shows usage beside the dropdown, dropping details first when narrow', async ($, on) => {
+  world(on, [{ content: 'x' }])
+  await start($)
+  const before = await ($.ui as any).mount(bandWith(120))
+  expect((await before.find({ type: 'Text', text: /5h/ }))?.text).toBe('5h 4% · wk 1%')
+  await before.unmount()
+
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
+  const wide = await ($.ui as any).mount(bandWith(120))
+  expect((await wide.find({ type: 'Text', text: /5h/ }))?.text).toBe('1 call · 4.0Ktok · cache 81% · $0.0002 · 5h 4% · wk 1%')
+  await wide.unmount()
+  const narrow = await ($.ui as any).mount(bandWith(60))
+  expect((await narrow.find({ type: 'Text', text: /5h/ }))?.text).toBe('1 call · 5h 4% · wk 1%')
+  await narrow.unmount()
+  const tight = await ($.ui as any).mount(bandWith(45))
+  expect((await tight.find({ type: 'Text', text: /5h/ }))?.text).toBe('5h 4%')
+  await tight.unmount()
+})
+
+test('the 5-hour window turns yellow past 80% in the band', async ($, on) => {
+  world(on, [{ content: 'x' }], { rolling: 85 })
+  await start($)
+  const ui = await ($.ui as any).mount(bandWith(120))
+  const part = await ui.find({ type: 'Text', text: /^5h 85%$/ })
+  expect(part?.props.color).toBe('warning')
+  await ui.unmount()
 })

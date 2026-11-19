@@ -20,7 +20,9 @@ Claude에게 월정액 워커 **[OpenCode Go](https://opencode.ai/docs/go)** 를
 | --- | --- |
 | `go_chat` | 작업 하나를 맡겨요. `files`는 플러그인이 직접 읽어 프롬프트 앞에 붙이므로 Claude가 파일 내용을 인자로 복사하지 않아요. `output_path`를 주면 답을 그 파일에 바로 쓰고 경로와 줄 수만 돌려줘요. 결과 끝에는 사용량 줄과 한도 줄(5시간·주간·월간 창)이 붙어요. 서로 독립된 작업이 여러 개면 Claude가 병렬로 불러요. |
 | `go_models` | Go 모델 목록이에요. 컨텍스트·출력 한도, 허용되는 `reasoning_effort` 값, 플랜별 월간 사용량, 플래그(추천 모델, 피크 시간 배수와 지금 적용 중인지, 제공자가 프롬프트를 보관하거나 학습에 쓸 수 있는지)를 보여 줘요. 무료 모델은 OpenCode 전용이라 뺐어요. |
-| 상태줄 | `opencode-go-worker 3회 12.4Ktok 캐시 62% · 5h 4% 주 1%`. 이 세션의 호출 수, 토큰, 프롬프트 캐시 적중률과 플랜의 5시간·주간 창이에요. 답을 쓰는 동안에는 `작성 중… 120줄`이 떠요. |
+| 상태줄 | `opencode-go-worker 5h 4%`. 플러그인이 로드됐다는 것과 플랜의 5시간 창을 얼마나 채웠는지만 보여 줘요(세션 시작 때와 호출할 때마다 확인하고, 읽지 못하면 `5h —`). 답을 쓰는 동안에는 `작성 중… 120줄`이 떠요. |
+| 모델 바 | 프롬프트 바로 위 한 줄이에요(터미널, 데스크톱 앱, VS Code): `Go 모델: [glm-5.3 ▾]  3회 · 12.4Ktok · 캐시 62% · $0.0012 · 5h 4% · 주 1%`. 드롭다운에서 고르면 `go_chat`이 바로 그 모델을 쓰고, `default_model`에도 저장돼요. 옆에는 이 세션의 호출 수, 토큰, 프롬프트 캐시 적중률, 쓴 한도와 플랜의 5시간·주간 창이 나와요. 5시간 창은 80%를 넘으면 노란색, 한도에 닿으면 빨간색이에요. 창이 좁으면 덜 중요한 것부터 빠지고 5시간 창은 끝까지 남아요. 설문이 그 자리를 쓰는 동안에는 비켜 줘요. |
+| `/go-model` | Claude가 `model`을 비웠을 때 `go_chat`이 쓸 모델을 바꿔요. Claude의 `/model`과 같은 역할이에요. `/go-model glm-5.3`처럼 바로 정할 수도 있고, `/go-model`만 입력하면 여유가 큰 추천 모델을 대화상자로 보여 줘요(id를 직접 입력해도 돼요). 바로 적용되고, 새 세션을 위해 `default_model` 옵션에도 저장돼요. |
 | `/go-usage` | 이 세션의 자세한 사용량(캐시된·캐시 안 된 입력, 출력, 추론, 쓴 월 한도)과 플랜 창별 리셋 시각이에요. 첫 호출 전에는 키가 맞는지 확인해 줘요(무료). |
 | Claude용 안내 | 언제 맡기고 언제 직접 할지, 언제 Go를 그만 쓸지(5시간 창 80% 초과, 한도 에러), Go의 프롬프트 캐시를 살리는 법을 Claude의 시스템 프롬프트에 넣어요. |
 
@@ -70,7 +72,7 @@ claude plugin install opencode-go-worker --marketplace doongchoong/claude-openco
 
 ## 쓰는 법
 
-`/plugin`에서 **기본 모델**(`default_model` 옵션)을 정해 두세요. 모델 라인업이 자주 바뀌어서 플러그인이 대신 고르지 않아요. 정하지 않으면 Claude가 `go_models`를 보고 작업마다 골라요.
+프롬프트 위 드롭다운이나 `/go-model`(또는 `/plugin`의 `default_model` 옵션)로 **기본 모델**을 정해 두세요. 모델 라인업이 자주 바뀌어서 플러그인이 대신 고르지 않아요. 정하지 않으면 Claude가 `go_models`를 보고 작업마다 골라요.
 
 그다음은 Claude에게 말하면 돼요. 직접 쓰는 것보다 맡기는 게 나을 때는 Claude가 알아서 맡기고, 명시적으로 시킬 수도 있어요.
 
@@ -88,7 +90,7 @@ claude plugin install opencode-go-worker --marketplace doongchoong/claude-openco
 | 플러그인 옵션 | 기본값 | |
 | --- | --- | --- |
 | `api_key` | — | Console 키, 보안 저장소에 보관 |
-| `default_model` | — | Claude가 `model`을 비웠을 때 쓸 모델 id |
+| `default_model` | — | Claude가 `model`을 비웠을 때 쓸 모델 id, `/go-model`이 바꿔요 |
 | `allow_outside_workdir` | 꺼짐 | 파일 권한 확인을 건너뜀 |
 | `language` | `auto` | 상태줄과 `/go-usage` 언어: `auto`, `en`, `ko` |
 
@@ -107,7 +109,7 @@ OpenCode Go는 월정액이고, 월 한도 위에 5시간 창과 주간 창이 �
 ```
 .claude-plugin/plugin.json       플러그인 매니페스트와 옵션
 .claude-plugin/marketplace.json  /plugin install로 이 저장소를 설치하게 해 줌
-hooks/register.ts                도구, Claude용 안내, 상태줄, /go-usage
+hooks/register.tsx               도구, Claude용 안내, 상태줄, 모델 드롭다운, /go-model, /go-usage
 hooks/go.test.ts                 API·파일·환경을 흉내 낸 테스트 (claude plugin test .)
 types/index.d.ts                 플러그인 상태의 모양(사용량, 한도, 언어)
 spike/                           API 스파이크(spike.sh)와 결과(FINDINGS.md)

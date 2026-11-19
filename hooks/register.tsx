@@ -41,7 +41,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.1.0'
+const VERSION = '0.1.4'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -120,8 +120,22 @@ type Lang = 'en' | 'ko'
 const UI = {
   en: {
     commandDescription: "Show this session's OpenCode Go worker usage and plan limits",
-    status: (calls: number, tok: string, hit: number) => `${calls} ${calls === 1 ? 'call' : 'calls'} ${tok}tok cache ${hit}%`,
-    windows: (r?: number, w?: number) => [r !== undefined ? `5h ${r}%` : '', w !== undefined ? `wk ${w}%` : ''].filter(Boolean).join(' '),
+    bandLabel: 'Go model',
+    bandPick: '— pick a model —',
+    modelCommandDescription: 'Pick the OpenCode Go model go_chat uses by default (or /go-model <id>)',
+    modelAsk: (current: string) => `${current ? `Now ${current}. ` : ''}Which OpenCode Go model should go_chat use (or type any id from go_models)?`,
+    modelSet: (id: string, saved: boolean) =>
+      `OpenCode Go model: ${id}${saved ? ' (saved as default_model for new sessions too)' : ' (this session only; set default_model in /plugin to keep it)'}`,
+    modelUnknown: (id: string, ids: string[]) => `Unknown OpenCode Go model: ${id}
+Available: ${ids.join(', ')}`,
+    modelFree: (id: string) => `${id} is a free model, which OpenCode Go only serves to OpenCode itself.`,
+    modelList: (current: string, ids: string[]) =>
+      `OpenCode Go model: ${current || '(none)'}
+Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
+    modelUnchanged: (current: string) => `OpenCode Go model unchanged: ${current || '(none)'}`,
+    calls: (n: number) => `${n} ${n === 1 ? 'call' : 'calls'}`,
+    cache: (pct: number) => `cache ${pct}%`,
+    week: (pct: number) => `wk ${pct}%`,
     noCalls: 'No OpenCode Go calls in this session yet.',
     detail: (u: Usage, hit: number) => [
       `OpenCode Go usage (this session, ${u.model})`,
@@ -147,8 +161,22 @@ const UI = {
   },
   ko: {
     commandDescription: '이 세션의 OpenCode Go 워커 사용량과 플랜 한도 보기',
-    status: (calls: number, tok: string, hit: number) => `${calls}회 ${tok}tok 캐시 ${hit}%`,
-    windows: (r?: number, w?: number) => [r !== undefined ? `5h ${r}%` : '', w !== undefined ? `주 ${w}%` : ''].filter(Boolean).join(' '),
+    bandLabel: 'Go 모델',
+    bandPick: '— 모델 고르기 —',
+    modelCommandDescription: 'go_chat이 기본으로 쓸 OpenCode Go 모델 고르기 (/go-model <id>도 가능)',
+    modelAsk: (current: string) => `${current ? `지금은 ${current}예요. ` : ''}go_chat이 쓸 OpenCode Go 모델은 무엇으로 할까요(go_models의 id를 직접 입력해도 돼요)?`,
+    modelSet: (id: string, saved: boolean) =>
+      `OpenCode Go 모델: ${id}${saved ? ' (default_model로 저장해서 새 세션에도 적용돼요)' : ' (이 세션에만 적용돼요. 계속 쓰려면 /plugin 에서 default_model을 정하세요)'}`,
+    modelUnknown: (id: string, ids: string[]) => `모르는 OpenCode Go 모델이에요: ${id}
+쓸 수 있는 모델: ${ids.join(', ')}`,
+    modelFree: (id: string) => `${id}는 무료 모델이라 OpenCode Go가 OpenCode 자체에만 제공해요.`,
+    modelList: (current: string, ids: string[]) =>
+      `OpenCode Go 모델: ${current || '(없음)'}
+/go-model <id> 로 고르세요. 쓸 수 있는 모델: ${ids.join(', ')}`,
+    modelUnchanged: (current: string) => `OpenCode Go 모델은 그대로예요: ${current || '(없음)'}`,
+    calls: (n: number) => `${n}회`,
+    cache: (pct: number) => `캐시 ${pct}%`,
+    week: (pct: number) => `주 ${pct}%`,
     noCalls: '이 세션에서는 아직 OpenCode Go를 호출하지 않았어요.',
     detail: (u: Usage, hit: number) => [
       `OpenCode Go 사용량 (이 세션, ${u.model})`,
@@ -309,13 +337,13 @@ async function findKey(io: IO, optionKey: string, home: string) {
 // Go requires x-opencode-session and caches prompts per session, so one id per Claude Code session
 const goSession = async (io: IO) => `ccgo-${await io.sessionId()}`
 
-type Options = { optionKey: string; allowOutside: boolean; defaultModel: string }
+type Options = { optionKey: string; allowOutside: boolean }
 
-async function loadConfig(io: IO, o: Options): Promise<Config> {
+async function loadConfig(io: IO, o: Options, model: string): Promise<Config> {
   const home = await homeDir(io)
   return {
     key: await findKey(io, o.optionKey, home),
-    model: o.defaultModel,
+    model,
     home,
     curl: await curlPath(io),
     session: await goSession(io),
@@ -415,7 +443,7 @@ async function resolveModel(io: IO, cfg: Config, a: Args) {
   const id = String(a.model ?? '').trim() || cfg.model
   if (!id) {
     throw new Error(
-      'No model chosen and the user has set no default_model. Call go_models, pick a model that fits the job, and pass it as model.',
+      'No model chosen and the user has set no default model (/go-model or the default_model option). Call go_models, pick a model that fits the job, and pass it as model.',
     )
   }
   let m: Model | undefined
@@ -669,6 +697,8 @@ const EMPTY: Usage = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 
 const totals = atom({ plugin: 'opencode-go-worker', key: 'totals' } as const, EMPTY, { shape: 'totals-1' })
 const limits = atom({ plugin: 'opencode-go-worker', key: 'limits' } as const, null as Limits, { shape: 'limits-1' })
 const uiLang = atom({ plugin: 'opencode-go-worker', key: 'uiLang' } as const, null as UiLang, { shape: 'uiLang-1' })
+// The model picked with /go-model in this session; it wins over the default_model option read at load
+const chosen = atom({ plugin: 'opencode-go-worker', key: 'model' } as const, null as string | null, { shape: 'model-1' })
 
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : `${n}`)
 const cachePct = (u: Usage) => {
@@ -676,12 +706,49 @@ const cachePct = (u: Usage) => {
   return all > 0 ? Math.round((u.cacheRead / all) * 100) : 0
 }
 
-function statusText(lang: Lang, u: Usage, l: Limits) {
-  if (u.calls === 0) return undefined
-  // The app puts the plugin name in front, so keep it to the numbers
-  const head = UI[lang].status(u.calls, fmt(u.input + u.cacheRead + u.cacheWrite + u.output), cachePct(u))
-  const win = l ? UI[lang].windows(l.rolling?.percent, l.weekly?.percent) : ''
-  return win ? `${head} · ${win}` : head
+// The status line under the prompt: just the 5-hour window, so it says the plugin is loaded and how full the
+// window is. The model and the rest live in the band above the prompt.
+function statusText(l: Limits) {
+  const r = l?.rolling
+  return r ? `5h ${r.percent}%${r.status !== 'ok' ? ` ${r.status}` : ''}` : '5h —'
+}
+
+// One piece of the band's usage text; tone colors the 5-hour window as it fills
+type Part = { text: string; drop: number; tone?: 'warning' | 'error' }
+
+// The band's usage pieces, each with the order it is left out in when the row is too narrow (1 first)
+function bandParts(lang: Lang, u: Usage, l: Limits): Part[] {
+  const t = UI[lang]
+  const parts: Part[] = []
+  if (u.calls > 0) {
+    parts.push({ text: t.calls(u.calls), drop: 4 })
+    parts.push({ text: `${fmt(u.input + u.cacheRead + u.cacheWrite + u.output)}tok`, drop: 1 })
+    parts.push({ text: t.cache(cachePct(u)), drop: 3 })
+    parts.push({ text: `$${u.allowance.toFixed(4)}`, drop: 2 })
+  }
+  const r = l?.rolling
+  if (r) {
+    const tone = r.percent >= 100 || r.status !== 'ok' ? 'error' : r.percent >= 80 ? 'warning' : undefined
+    parts.push({ text: `5h ${r.percent}%`, drop: 99, tone })
+  }
+  if (l?.weekly) parts.push({ text: t.week(l.weekly.percent), drop: 5 })
+  return parts
+}
+
+// Terminal cells a string takes: wide (CJK) characters count twice
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/
+const cells = (text: string) => [...text].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0)
+
+// Leaves pieces out, lowest `drop` first, until the joined text fits in `width` cells
+function fitParts(parts: Part[], width: number) {
+  let kept = [...parts]
+  const len = () => cells(kept.map(p => p.text).join(' · '))
+  while (kept.length > 1 && len() > width) {
+    const lowest = Math.min(...kept.map(p => p.drop))
+    const at = kept.findIndex(p => p.drop === lowest)
+    kept = kept.filter((_, j) => j !== at)
+  }
+  return kept
 }
 
 function limitsText(lang: Lang, l: Limits | undefined) {
@@ -863,11 +930,69 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
       }
     },
     record: async (used, l) => {
-      const u = await update($, totals, prev => addUsage(prev, used))
+      await update($, totals, prev => addUsage(prev, used))
       const lim = l ? await update($, limits, () => l) : await read($, limits)
-      $.ui.status(statusText(await langOf($, langOption), u, lim))
+      $.ui.status(statusText(lim))
     },
   }
+}
+
+// The default_model option as read when the plugin loaded
+let optionModel = ''
+const modelOf = async ($: EngineInterface) => (await read($, chosen)) ?? optionModel
+
+async function showStatus($: EngineInterface, langOption: unknown) {
+  $.ui.status(statusText(await read($, limits)))
+}
+
+// /go-model [id]: pick the model go_chat uses when Claude leaves model empty.
+// Kept in $.state for this session and written to the default_model option, so new sessions start with it.
+async function pickModel($: EngineInterface, langOption: unknown, args: string): Promise<string> {
+  const t = UI[await langOf($, langOption)]
+  const io = makeIO($, langOption)
+  const current = await modelOf($)
+  let list: Model[] | undefined
+  try {
+    list = (await listModels(io)).filter(m => !isFree(m))
+  } catch {}
+  const ids = list?.map(m => m.id) ?? []
+  let pick = args.trim()
+  if (!pick) {
+    // The question dialog takes up to four options (plus typed text): featured models with the most room first
+    const top = (list ?? [])
+      .filter(m => m.go?.featured)
+      .sort((a, b) => (b.go?.monthly_usage?.go ?? 0) - (a.go?.monthly_usage?.go ?? 0))
+      .map(m => m.id)
+    const options = [...new Set([...(current ? [current] : []), ...top])].slice(0, 4)
+    try {
+      pick = (await $.ui.ask(t.modelAsk(current), { options, header: 'Go model' })).trim()
+    } catch {
+      return t.modelList(current, ids) // nobody to ask (a background run) or the dialog was dismissed
+    }
+    if (!pick) return t.modelUnchanged(current)
+  }
+  if (list && !ids.includes(pick)) {
+    const all = await listModels(io).catch(() => [] as Model[])
+    return all.some(m => m.id === pick) ? t.modelFree(pick) : t.modelUnknown(pick, ids)
+  }
+  return t.modelSet(pick, await setModel($, langOption, pick))
+}
+
+// Switches the model for this session and saves it as default_model; true when the option was written
+async function setModel($: EngineInterface, langOption: unknown, id: string) {
+  await update($, chosen, () => id) // the band reads this atom, so it redraws by itself
+  let saved = false
+  try {
+    saved = !(await $.config.set({ key: `${PLUGIN}.default_model`, value: id })).deny
+  } catch {}
+  await showStatus($, langOption)
+  return saved
+}
+
+// The order the band's dropdown lists models in: featured first, then the rest, each by monthly room
+function pickerOrder(list: Model[]) {
+  const room = (m: Model) => m.go?.monthly_usage?.go ?? 0
+  return [...list].filter(m => !isFree(m)).sort((a, b) => Number(!!b.go?.featured) - Number(!!a.go?.featured) || room(b) - room(a))
 }
 
 // The language people read. Detected once per session (detection may start a process) and kept in $.state;
@@ -885,8 +1010,8 @@ export const register: Register = (on, options) => {
   const opts: Options = {
     optionKey: String(options.api_key ?? ''),
     allowOutside: options.allow_outside_workdir === true,
-    defaultModel: String(options.default_model ?? '').trim(),
   }
+  optionModel = String(options.default_model ?? '').trim()
   const langOption = options.language
 
   on('session.start', async ($, e, next) => {
@@ -896,13 +1021,21 @@ export const register: Register = (on, options) => {
     } catch {
       // Another plugin already registered the name; skip just the command
     }
+    try {
+      await $.command.register({ name: 'go-model', description: UI[lang].modelCommandDescription })
+    } catch {}
     // With ~/.config/opencode-go/disabled present, don't register the tools at all
     const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
     if (!(await $.fs.exists(disabledFile(home)))) {
       for (const t of TOOLS) await $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema })
     }
-    // Totals survive a reload in $.state, so restore the status line
-    $.ui.status(statusText(lang, await read($, totals), await read($, limits)))
+    // The 5-hour window from the start, so the status line shows it before any call (a failure leaves `5h —`)
+    try {
+      const io = makeIO($, langOption)
+      const fresh = await fetchLimits(io, await findKey(io, opts.optionKey, await homeDir(io)))
+      if (fresh) await update($, limits, () => fresh)
+    } catch {}
+    await showStatus($, langOption)
     return next(e)
   })
 
@@ -928,19 +1061,69 @@ export const register: Register = (on, options) => {
     return { text: detailText(lang, u, l) }
   })
 
+  // A one-line dropdown above the prompt to switch the model, like Claude's own model picker.
+  // Steps aside while a survey holds the band, and when the plugin is turned off.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+    if (await $.fs.exists(disabledFile(home))) return next(e)
+    const t = UI[await langOf($, langOption)]
+    const current = await modelOf($)
+    let ids: string[] = []
+    try {
+      ids = pickerOrder(await listModels(makeIO($, langOption))).map(m => m.id)
+    } catch {}
+    if (current && !ids.includes(current)) ids.unshift(current)
+    const options = [...(current ? [] : [{ value: '', label: t.bandPick }]), ...ids.map(id => ({ value: id }))]
+    if (options.length === 0) return next(e)
+    const elements = $.ui.resolve(e)
+    if (!('Select' in elements)) return next(e) // a surface with no dropdown (the mobile app): /go-model still works
+    const { Box, Select, Text } = elements
+    // Usage beside the dropdown, fitted to what is left of the row after the dropdown's own width
+    const longest = Math.max(...options.map(o => cells(('label' in o ? o.label : undefined) ?? o.value)))
+    const room = e.props.bodyColumns - (cells(t.bandLabel) + longest + 8)
+    const parts = fitParts(bandParts(await langOf($, langOption), await read($, totals), await read($, limits)), room)
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        <Select
+          key="go-model"
+          label={t.bandLabel}
+          options={options}
+          value={current}
+          onSelect={(id: string) => {
+            if (id && id !== current) void setModel($, langOption, id)
+          }}
+        />
+        {room > 4 && parts.length > 0 ? (
+          <Text>
+            {parts.map((p, i) => (
+              <Text key={`p${i}`} color={p.tone} dimColor={!p.tone}>
+                {i > 0 ? ` · ${p.text}` : p.text}
+              </Text>
+            ))}
+          </Text>
+        ) : null}
+      </Box>
+    )
+  })
+
+  on('command.run', { command: 'go-model' }, async ($, e) => ({
+    text: await pickModel($, langOption, String((e as { args?: unknown }).args ?? '')),
+  }))
+
   on('tool.call', { tool: /^mcp__opencode-go-worker__go_(chat|models)$/ }, async ($, e) => {
     const t = TOOLS.find(x => TOOL(x.name) === e.tool)
     if (!t) return { deny: `Unknown tool: ${e.tool}` }
     const io = makeIO($, langOption)
     try {
       if (await io.exists(disabledFile(await homeDir(io)))) return { result: DISABLED_MESSAGE }
-      const cfg = t.needsKey ? await loadConfig(io, opts) : ({ home: await homeDir(io) } as Config)
+      const cfg = t.needsKey ? await loadConfig(io, opts, await modelOf($)) : ({ home: await homeDir(io) } as Config)
       return { result: await t.run(io, cfg, { ...(e as object) } as Args) }
     } catch (err) {
       return { deny: `${t.name} failed: ${(err as Error).message}` }
     } finally {
       // Progress may have taken over the status line; put the usage back
-      $.ui.status(statusText(await langOf($, langOption), await read($, totals), await read($, limits)))
+      await showStatus($, langOption)
     }
   })
 }

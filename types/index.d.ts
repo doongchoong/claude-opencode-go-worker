@@ -23,6 +23,6 @@ export type UiLang = { option: string; lang: 'en' | 'ko' } | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'opencode-go-worker': { totals: Shaped<Usage>; limits: Shaped<Limits>; uiLang: Shaped<UiLang> }
+    'opencode-go-worker': { totals: Shaped<Usage>; limits: Shaped<Limits>; uiLang: Shaped<UiLang>; model: Shaped<string | null> }
   }
 }
