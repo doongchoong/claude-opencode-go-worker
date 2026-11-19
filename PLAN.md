@@ -32,24 +32,23 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 - 도구 실행은 엔진이 한다 → Claude Code 권한 체계를 그대로 탄다. Claude는 언제 띄울지 정하고 결과를 검토한다.
 - 내장 `Explore`를 바꿔치기(`agent.spawn`)하는 건 나중 옵션.
 
-## 2. OpenCode Go API (2026-11 조사, 스파이크에서 확정할 것)
+## 2. OpenCode Go API (1단계 스파이크로 확정, 상세는 [spike/FINDINGS.md](spike/FINDINGS.md))
 
 - Base: `https://opencode.ai/inference/go`
-  - OpenAI: `POST /openai/v1/chat/completions`
-  - Anthropic: `POST /anthropic/v1/messages` (`max_tokens` 필수)
-  - 어느 경로든 모든 Go 모델을 받는다(콘솔이 변환). 모델 고유 API는 모델 목록의 `api` 필드.
-- 모델 목록: `GET /inference/go/v1/models` — `go.monthly_usage`, `capabilities.tools`, `capabilities.reasoning`, 캐시 단가
-- 인증: Console 키 `oc_sk_...`
-  - chat/completions: `Authorization: Bearer`
-  - messages: `x-api-key`만 받는다는 보고 있음 (cc-switch PR #6196) — 확인
+  - **`go_chat`은 `POST /openai/v1/chat/completions` 하나만 쓴다.** messages 모델·responses 모델도 이 경로로 200 (교차 확인).
+  - `/anthropic/v1/messages`도 모든 모델을 받는다 → v0.2 explore용.
+- 모델 목록: `GET /inference/go/v1/models` — **인증 불필요**. `go.monthly_usage{go,go-plus,go-teams}`, `go.training/zdr`,
+  `capabilities.reasoning.effort`(모델별 허용값), `limit`, `cost.multipliers`(일부 모델 평일 피크 2배), `recommended_api`
+- 인증: Console 키 `oc_sk_...`, **`Authorization: Bearer`로 통일** (chat/completions는 x-api-key 거부, messages는 둘 다 허용)
 - 필수/권장 헤더
-  - `x-opencode-session`: 고정 세션 ID. Go는 필수, 프롬프트 캐시도 이 기준
+  - `x-opencode-session`: 없으면 400 `MissingSessionID` (인증보다 먼저 검사). 프롬프트 캐시도 이 기준 (확인됨)
   - `User-Agent`: 자체 이름 (`opencode-go-worker/<version>`). 범용 SDK 이름 쓰지 말 것
-- usage: `usage.opencode.tokens` = `input, output, reasoning, cache_read, cache_write_5m, cache_write_1h`,
-  `cost`, `billing_source` (`go` / `go-plus` / `balance` …), `allowance` (이번 요청이 쓴 월 한도, USD). 스트림 마지막 이벤트에도 실림.
+- usage: `usage.opencode = { billing_source, list_cost, allowance, tokens{input,output,reasoning,cache_read,cache_write_5m,cache_write_1h} }`.
+  최상위 `usage.cost`는 Go 한도 처리 시 0. `allowance` = list_cost × 모델 배수(USD). `tokens.input`은 캐시 제외분.
+  스트림은 `stream_options.include_usage`로 마지막 청크에 실림. 추론은 `delta.reasoning_content` (저장 시 제외).
 - 한도: 월 한도 기준 5시간 창 20%, 주간 50% (월요일 00:00 UTC 리셋). 초과 시 429 또는 Extra Usage(잔액 차감).
-- 남은 한도: `GET https://opencode.ai/zen/go/v1/usage` → `rolling` / `weekly` / `monthly` 각 `percent`, `resetsAt`.
-  **비공식** (opencode PR #32913). 실패하면 상태줄에서 그 부분만 숨긴다.
+- 남은 한도: `GET https://opencode.ai/zen/go/v1/usage` (Bearer) → `usage.{rolling,weekly,monthly}.{status,percent,resetsAt}`.
+  percent는 정수. 5시간 창은 첫 요청부터 시작. **비공식** (opencode PR #32913). 실패하면 상태줄에서 그 부분만 숨긴다.
 - 약관: Claude Code 등 외부 클라이언트 사용 허용. 무료 모델은 OpenCode 전용(외부는 403). 남용 트래픽 모니터링.
 
 출처: opencode.ai/docs/go, /docs/console/harnesses, /docs/console/api/inference, /docs/console/api/models
@@ -71,9 +70,9 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 
 ## 4. 단계
 
-1. **스파이크 (curl)**: 실제 키로 chat/completions · messages 스트리밍, usage 필드, `/zen/go/v1/usage`, `/v1/models` 응답 확인. 헤더(인증, 세션) 확정.
-2. **v0.1 본체**: 키/설정 로딩, `go_chat`, `go_models`, 상태줄, `/go-usage`, GUIDE.
-3. **테스트 + README** (영어/한국어).
+1. ~~**스파이크 (curl)**~~ (완료): 실제 키로 chat/completions · messages 스트리밍, usage 필드, `/zen/go/v1/usage`, `/v1/models` 응답 확인. 헤더(인증, 세션) 확정.
+2. ~~**v0.1 본체**~~ (완료): 키/설정 로딩, `go_chat`, `go_models`, 상태줄, `/go-usage`, GUIDE.
+3. ~~**테스트 + README**~~ (영어/한국어, 완료)
 4. **v0.2 스파이크**: `turn.step`에서 `next` 없이 만든 응답이 transcript에 tool_use로 남고 실제 실행되는지. 막히면 explore 아이디어 폐기.
 5. **v0.2 explore 서브에이전트**: thinking 블록 제거, 스키마 첨부, usage를 `stop` 청크로 보고.
 6. (나중) deepseek-worker 정리: batch/agent 정리, explore 서브에이전트를 DeepSeek에도 적용 검토.
