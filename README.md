@@ -8,13 +8,7 @@ Claude does the thinking; Go does the legwork. Go is a monthly plan, so within i
 
 No Python, Node, server or OpenCode CLI to install. It runs inside Claude Code.
 
-```mermaid
-flowchart LR
-    U([You]) --> C[Claude<br/>instructs · reviews]
-    C -- go_chat / go_agent / go_explore --> P[Plugin]
-    P <--> G[(OpenCode Go)]
-    P -- files · short report --> C
-```
+![You → Claude → plugin ↔ OpenCode Go; results come back to Claude as files and a short report](docs/flow.en.svg)
 
 ## On screen
 
@@ -37,20 +31,7 @@ flowchart LR
 
 Claude calls it once and gets one report back. Editing, testing and fixing again all happen inside the plugin, with Go on its own — no Claude tokens in between.
 
-```mermaid
-sequenceDiagram
-    participant C as Claude
-    participant P as Plugin
-    participant G as Go model
-    C->>P: go_agent(task, check_command)
-    loop until it passes or gives up
-        P->>G: the conversation so far
-        G-->>P: read · edit · run requests
-        P->>P: check permissions, then do it
-    end
-    P->>P: run check_command once more
-    P-->>C: report (changed files, pass/fail)
-```
+![go_agent: inside the plugin Go reads, edits and runs commands in a loop, the check runs once more, and one report goes back to Claude](docs/agent-loop.en.svg)
 
 Go can run only the commands Claude listed in the call (five at most), picked by number; it can't change them. It reads and writes files only where Claude could without asking.
 
@@ -143,6 +124,7 @@ hooks/register.tsx               tools, guidance for Claude, status line, model 
 hooks/go.test.ts                 tests (claude plugin test .)
 types/index.d.ts                 the shape of the plugin's state
 spike/                           API investigation script and findings
+docs/                            README diagrams (python3 docs/make_diagrams.py docs)
 ```
 
 Bump `version` in `.claude-plugin/plugin.json` with every release; installs are cached per version.

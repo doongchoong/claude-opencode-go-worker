@@ -1,7 +1,7 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.5.5",
-  "description": "OpenCode Go as a flat-rate worker for Claude: one-shot jobs, a code explorer and a small coding agent, with plan usage in the status line.",
+  "version": "0.5.6",
+  "description": "OpenCode Go as a flat-rate worker for Claude: one-shot jobs, a code explorer and a small coding agent, with plan usage in the status line. / Claude가 OpenCode Go(월정액)에 일을 맡깁니다: 한 번짜리 작업, 코드 탐색, 작은 코딩 에이전트, 상태줄의 사용량 표시.",
   "author": {
     "name": "doongchoong"
   },
@@ -18,39 +18,39 @@
   "userConfig": {
     "api_key": {
       "type": "string",
-      "title": "OpenCode Console API key",
-      "description": "A Console key (oc_sk_...) from a workspace subscribed to Go, kept in secure storage. Leave it empty to use ~/.config/opencode-go/api_key. Environment variables are not read.",
+      "title": "OpenCode Console API key · API 키",
+      "description": "A Console key (oc_sk_...) from a workspace subscribed to Go, kept in secure storage. Empty: ~/.config/opencode-go/api_key is read. / Go를 구독한 워크스페이스의 Console 키. 보안 저장소에 보관. 비우면 ~/.config/opencode-go/api_key 를 읽습니다.",
       "sensitive": true,
       "required": false
     },
     "default_model": {
       "type": "string",
-      "title": "Default model",
-      "description": "The model new sessions use. Picking one in the model bar or with /go-model sets it.",
+      "title": "Default model · 기본 모델",
+      "description": "The model new sessions use; the model bar and /go-model set it. / 새 세션이 쓸 모델. 모델 바나 /go-model 로 고르면 바뀝니다.",
       "required": false
     },
     "allow_outside_workdir": {
       "type": "boolean",
-      "title": "Skip the file permission check",
-      "description": "go_chat's files and output_path may only use paths Claude itself could Read / Write without asking, never files a deny rule blocks. Turn on to skip that check.",
+      "title": "Skip the file permission check · 파일 권한 확인 건너뛰기",
+      "description": "go_chat's files and output_path may only use paths Claude could Read / Write without asking. On: skip that check. / go_chat 의 files·output_path 는 Claude가 묻지 않고 쓸 수 있는 곳만 씁니다. 켜면 이 확인을 건너뜁니다.",
       "default": false
     },
     "explore_agent": {
       "type": "boolean",
-      "title": "go_explore (code explorer)",
-      "description": "Go answers questions about the codebase by searching and reading files on its own, and returns the answer with path:line evidence. It changes nothing.",
+      "title": "go_explore · 코드 탐색",
+      "description": "Go searches and reads files on its own to answer questions about the code, with path:line evidence. Changes nothing. / Go가 직접 파일을 찾고 읽어서 코드에 대한 질문에 path:line 근거와 함께 답합니다. 아무것도 바꾸지 않습니다.",
       "default": true
     },
     "worker_agent": {
       "type": "boolean",
-      "title": "go_agent (coding agent)",
-      "description": "Go edits files, runs the check command Claude gives it, and fixes until it passes, all inside one call. It runs only the commands Claude lists.",
+      "title": "go_agent · 코딩 에이전트",
+      "description": "Go edits files, runs the check Claude gives it and fixes until it passes, inside one call. Runs only the commands Claude lists. / Go가 파일을 고치고 확인 명령을 돌려 통과할 때까지 다시 고칩니다. 호출 한 번 안에서 끝나고, Claude가 적어 준 명령만 실행합니다.",
       "default": true
     },
     "language": {
       "type": "string",
-      "title": "Language",
-      "description": "Language of the plugin settings, model bar, status line and commands: auto (your system language), en or ko.",
+      "title": "Language · 언어",
+      "description": "Language of the model bar, status line and commands: auto, en or ko. / 모델 바, 상태줄, 명령의 언어: auto, en, ko.",
       "options": [
         "auto",
         "en",

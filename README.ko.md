@@ -8,13 +8,7 @@ Claude Code에 [OpenCode Go](https://opencode.ai/docs/go)를 일꾼으로 붙이
 
 Python, Node, 별도 서버, OpenCode CLI 모두 필요 없습니다. Claude Code 안에서 그대로 돌아갑니다.
 
-```mermaid
-flowchart LR
-    U([나]) --> C[Claude<br/>지시 · 검토]
-    C -- go_chat / go_agent / go_explore --> P[플러그인]
-    P <--> G[(OpenCode Go)]
-    P -- 파일 · 짧은 보고서 --> C
-```
+![나 → Claude → 플러그인 ↔ OpenCode Go, 결과는 파일과 짧은 보고서로 Claude에게](docs/flow.ko.svg)
 
 ## 화면
 
@@ -37,20 +31,7 @@ flowchart LR
 
 Claude는 한 번 부르고 보고서 한 장을 받습니다. 고치고, 테스트하고, 다시 고치는 반복은 전부 플러그인 안에서 Go가 혼자 합니다. 그 사이에 Claude 토큰은 쓰이지 않습니다.
 
-```mermaid
-sequenceDiagram
-    participant C as Claude
-    participant P as 플러그인
-    participant G as Go 모델
-    C->>P: go_agent(작업, check_command)
-    loop 통과하거나 포기할 때까지
-        P->>G: 지금까지의 대화
-        G-->>P: 파일 읽기 · 고치기 · 명령 실행 요청
-        P->>P: 권한 확인 후 실행
-    end
-    P->>P: check_command 한 번 더 실행
-    P-->>C: 보고서 (바뀐 파일, 통과/실패)
-```
+![go_agent: 플러그인 안에서 Go가 읽기·고치기·명령을 반복하고, 마지막에 확인 명령을 다시 돌려 보고서를 Claude에게 돌려줌](docs/agent-loop.ko.svg)
 
 Go가 실행할 수 있는 명령은 Claude가 호출할 때 적어 준 것(최대 5개)뿐입니다. 번호로만 고를 수 있고 내용은 바꿀 수 없습니다. 파일은 Claude가 묻지 않고 읽고 쓸 수 있는 곳만 다룹니다.
 
@@ -143,6 +124,7 @@ hooks/register.tsx               도구, Claude용 안내, 상태줄, 모델 바
 hooks/go.test.ts                 테스트 (claude plugin test .)
 types/index.d.ts                 플러그인 상태의 모양
 spike/                           API 조사 스크립트와 결과
+docs/                            README 그림 (python3 docs/make_diagrams.py docs)
 ```
 
 배포할 때는 `.claude-plugin/plugin.json` 의 `version` 을 올려야 합니다. 설치본이 버전별로 캐시되기 때문입니다.
