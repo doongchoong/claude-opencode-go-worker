@@ -4,6 +4,8 @@
 
 Claude Code에 [OpenCode Go](https://opencode.ai/docs/go)를 일꾼으로 붙이는 플러그인입니다.
 
+> Claude를 바꾸는 도구가 아니라, Claude가 잡일을 맡길 하청을 하나 두는 도구. 판단과 통제는 끝까지 Claude Code 안에 있고, 토큰이 아까운 일만 월정액 모델에 넘긴다.
+
 생각은 Claude가 하고, 손이 많이 가는 일은 Go가 합니다. Go는 월정액이라 한도 안에서는 몇 번을 불러도 추가 비용이 없습니다. 그래서 테스트 수십 개 쓰기, 정해진 형식의 코드 찍어내기, 데이터 변환처럼 길지만 뻔한 일은 Go에 넘기고, Claude는 지시와 검토만 합니다.
 
 Python, Node, 별도 서버, OpenCode CLI 모두 필요 없습니다. Claude Code 안에서 그대로 돌아갑니다.

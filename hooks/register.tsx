@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.6'
+const VERSION = '0.5.7'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -1801,8 +1801,12 @@ export const register: Register = (on, options) => {
       const fresh = await fetchLimits(io, await findKey(io, opts.optionKey, await homeDir(io)))
       if (fresh) await update($, limits, () => fresh)
     } catch {}
+    // The model list (loadEst reads it too) and the estimates, so the bar has what it draws
+    await listModels(makeIO($, langOption)).catch(() => undefined)
     await loadEst(makeIO($, langOption))
     await showStatus($, langOption)
+    // The app may have asked for the bar before any of this was ready, and got nothing: draw it again now
+    $.ui.invalidate('ui.render')
     return next(e)
   })
 
@@ -1845,7 +1849,8 @@ export const register: Register = (on, options) => {
     const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
     if (await $.fs.exists(disabledFile(home))) return next(e)
     const t = UI[await langOf($, langOption)]
-    const current = await modelOf($)
+    // Early in a session the session's own values may not be there yet: fall back to the option
+    const current = await modelOf($).catch(() => optionModel)
     let ids: string[] = []
     let byModel: Record<string, Model> = {}
     try {

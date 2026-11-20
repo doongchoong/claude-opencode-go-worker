@@ -4,6 +4,8 @@
 
 A Claude Code plugin that gives Claude a worker on [OpenCode Go](https://opencode.ai/docs/go).
 
+> Claude stays in charge. This doesn't swap Claude out — it gives Claude a cheap pair of hands for the busywork, while every decision and every permission check stays in Claude Code.
+
 Claude does the thinking; Go does the legwork. Go is a monthly plan, so within its limits a call costs nothing extra. Long but predictable work — dozens of tests, code in a fixed format, data conversion — goes to Go, and Claude only writes the instructions and checks the result.
 
 No Python, Node, server or OpenCode CLI to install. It runs inside Claude Code.
