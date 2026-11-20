@@ -51,7 +51,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.0'
+const VERSION = '0.5.1'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -749,13 +749,18 @@ async function saveOutput(io: IO, cfg: Config, content: string, outputPath: stri
 
 const EMPTY: Usage = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, allowance: 0, lastIn: 0, lastOut: 0, model: '' }
 // Bump the shape tag when the fields change: values saved by an older version are dropped for the initial value
-const totals = atom({ plugin: 'opencode-go-worker', key: 'totals' } as const, EMPTY, { shape: 'totals-1' })
 const limits = atom({ plugin: 'opencode-go-worker', key: 'limits' } as const, null as Limits, { shape: 'limits-1' })
 const uiLang = atom({ plugin: 'opencode-go-worker', key: 'uiLang' } as const, null as UiLang, { shape: 'uiLang-1' })
-// The model picked with /go-model in this session; it wins over the default_model option read at load
-const chosen = atom({ plugin: 'opencode-go-worker', key: 'model' } as const, null as string | null, { shape: 'model-1' })
-// Explore agents at work, by agent id: their step and what they are doing, for the band
-const exploring = atom({ plugin: 'opencode-go-worker', key: 'exploring' } as const, {} as Exploring, { shape: 'exploring-1' })
+// What belongs to one session is kept per session id: the plugin's state is shared by every session the app
+// runs (seen live: a model picked in one session's dropdown showed up in another's). The plan windows and the
+// language stay shared.
+// This session's usage totals
+// The model picked in this session (/go-model or the dropdown); it wins over the default_model option
+// This session's Go agents at work (go_agent, go_explore): their step and what they are doing, for the band
+const readTotals = async ($: EngineInterface) =>
+  (await read($, { plugin: 'opencode-go-worker', key: 'totalsBySession', id: await $.session.id() } as const)) ?? EMPTY
+const readExploring = async ($: EngineInterface) =>
+  (await read($, { plugin: 'opencode-go-worker', key: 'exploringBySession', id: await $.session.id() } as const)) ?? {}
 
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : `${n}`)
 const cachePct = (u: Usage) => {
@@ -1491,7 +1496,7 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
       }
     },
     record: async (used, l) => {
-      await update($, totals, prev => addUsage(prev, used))
+      await update($, { plugin: 'opencode-go-worker', key: 'totalsBySession', id: await $.session.id() } as const, prev => addUsage(prev ?? EMPTY, used))
       const lim = l ? await update($, limits, () => l) : await read($, limits)
       $.ui.status(statusText(lim))
     },
@@ -1503,8 +1508,8 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
     checkCommand: command => $.tool.check({ tool: 'Bash', input: { command } } as Parameters<typeof $.tool.check>[0]),
     log: text => $.ui.log(text),
     progress: async (name, p) =>
-      void (await update($, exploring, x => {
-        const rest = Object.fromEntries(Object.entries(x).filter(([k]) => k !== name))
+      void (await update($, { plugin: 'opencode-go-worker', key: 'exploringBySession', id: await $.session.id() } as const, x => {
+        const rest = Object.fromEntries(Object.entries(x ?? {}).filter(([k]) => k !== name))
         return p ? { ...rest, [name]: { name, ...p } } : rest
       })),
   }
@@ -1512,7 +1517,8 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
 
 // The default_model option as read when the plugin loaded
 let optionModel = ''
-const modelOf = async ($: EngineInterface) => (await read($, chosen)) ?? optionModel
+const modelOf = async ($: EngineInterface) =>
+  (await read($, { plugin: 'opencode-go-worker', key: 'modelBySession', id: await $.session.id() } as const)) || optionModel
 
 async function showStatus($: EngineInterface, langOption: unknown) {
   $.ui.status(statusText(await read($, limits)))
@@ -1553,7 +1559,7 @@ async function pickModel($: EngineInterface, langOption: unknown, args: string):
 
 // Switches the model for this session and saves it as default_model; true when the option was written
 async function setModel($: EngineInterface, langOption: unknown, id: string) {
-  await update($, chosen, () => id) // the band reads this atom, so it redraws by itself
+  await update($, { plugin: 'opencode-go-worker', key: 'modelBySession', id: await $.session.id() } as const, () => id) // the band reads this atom, so it redraws by itself
   let saved = false
   try {
     saved = !(await $.config.set({ key: `${PLUGIN}.default_model`, value: id })).deny
@@ -1609,6 +1615,11 @@ export const register: Register = (on, options) => {
         await $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema })
       }
     }
+    // The session keeps the default it started with: a pick made later in another session changes default_model,
+    // which reloads the plugin everywhere, but must not move this session's model. A reload finds the pick in place.
+    const sid = await $.session.id()
+    const own = await read($, { plugin: 'opencode-go-worker', key: 'modelBySession', id: sid } as const)
+    if (!own && optionModel) await update($, { plugin: 'opencode-go-worker', key: 'modelBySession', id: sid } as const, () => optionModel)
     // The 5-hour window from the start, so the status line shows it before any call (a failure leaves `5h —`)
     try {
       const io = makeIO($, langOption)
@@ -1633,7 +1644,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'go-usage' }, async $ => {
     const lang = await langOf($, langOption)
     const io = makeIO($, langOption)
-    const u = await read($, totals)
+    const u = await readTotals($)
     if (u.calls === 0) return { text: await keyCheckText(io, lang, opts.optionKey) }
     // Look the windows up again: they move with use from other clients too
     let l = await read($, limits)
@@ -1667,7 +1678,7 @@ export const register: Register = (on, options) => {
     const room = e.props.bodyColumns - (cells(t.bandLabel) + longest + 8)
     const lang = await langOf($, langOption)
     const lim = await read($, limits)
-    const parts = fitParts(progressParts(lang, await read($, exploring), lim) ?? bandParts(lang, await read($, totals), lim), room)
+    const parts = fitParts(progressParts(lang, await readExploring($), lim) ?? bandParts(lang, await readTotals($), lim), room)
     return (
       <Box flexDirection="row" alignItems="center" columnGap={2}>
         <Select

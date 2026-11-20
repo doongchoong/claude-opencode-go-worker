@@ -26,6 +26,14 @@ export type UiLang = { option: string; lang: 'en' | 'ko' } | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'opencode-go-worker': { totals: Shaped<Usage>; limits: Shaped<Limits>; uiLang: Shaped<UiLang>; model: Shaped<string | null>; exploring: Shaped<Exploring> }
+    'opencode-go-worker': {
+      // Shared by every session
+      limits: Shaped<Limits>
+      uiLang: Shaped<UiLang>
+      // One per session id: the session's own usage, picked model and agents at work
+      totalsBySession: StateFamily<Usage>
+      modelBySession: StateFamily<string>
+      exploringBySession: StateFamily<Exploring>
+    }
   }
 }

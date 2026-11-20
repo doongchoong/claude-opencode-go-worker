@@ -136,7 +136,9 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     return { value: undefined }
   })
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
-  on('session.id', () => ({ value: 'sess-1' }))
+  // which session the calls come from; a test may switch it to act as another session of the same app
+  const session = { id: 'sess-1' }
+  on('session.id', () => ({ value: session.id }))
   on('ui.status', (_: unknown, e: any) => {
     statuses.push(e.text)
     return { value: undefined }
@@ -300,7 +302,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     }
     return { value: { code: 0, signal: null } }
   })
-  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions, agents, exploreBodies, agentRequests, runs, bashChecks, registered, logs }
+  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions, agents, exploreBodies, agentRequests, runs, bashChecks, registered, logs, session }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
@@ -843,3 +845,33 @@ test('go_explore: its progress clears from the band after the run', EXPLORE_OPTS
   expect((await ui.find({ type: 'Text', text: /5h/ }))?.text).toBe('1 call · 240tok · cache 20% · $0.0002 · 5h 4% · wk 1%')
   await ui.unmount()
 })
+
+test('sessions keep their own picked model, usage and band; a pick in one session does not move another', { options: { default_model: 'kimi-k2.7-code' } }, async ($, on) => {
+  const w = world(on, [{ content: 'x' }])
+  await start($)
+  const band = async () => {
+    const ui = await ($.ui as any).mount(bandWith(140))
+    const select = await ui.find({ type: 'Select' })
+    const usage = (await ui.find({ type: 'Text', text: /5h/ }))?.text
+    await ui.unmount()
+    return { model: select?.props.value, usage }
+  }
+  // session 1 picks glm and makes a call
+  await goModel($, 'glm-5.3-flash')
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x' })
+  expect(w.sent[0].model).toBe('glm-5.3-flash')
+  expect(await band()).toEqual({ model: 'glm-5.3-flash', usage: '1 call · 4.0Ktok · cache 81% · $0.0002 · 5h 4% · wk 1%' })
+
+  // session 2 never picked: it uses the default and has its own (empty) usage
+  w.session.id = 'sess-2'
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'y' })
+  expect(w.sent[1].model).toBe('kimi-k2.7-code')
+  expect((await band()).model).toBe('kimi-k2.7-code')
+  // session 2 picks deepseek: session 1 keeps glm
+  await goModel($, 'deepseek-v4.1-flash')
+  w.session.id = 'sess-1'
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'z' })
+  expect(w.sent[2].model).toBe('glm-5.3-flash')
+  expect((await band()).usage).toBe('2 calls · 8.0Ktok · cache 81% · $0.0004 · 5h 4% · wk 1%')
+})
+
