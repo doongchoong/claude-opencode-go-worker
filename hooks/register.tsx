@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.6.0'
+const VERSION = '0.6.1'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -1173,7 +1173,7 @@ async function chatBatch(io: IO, cfg: Config, a: Args) {
     const failed = outs.filter(o => o.text.startsWith('[failed]')).length
     const head = `${list.length - failed}/${list.length} jobs finished${failed ? `, ${failed} failed` : ''}.${limited ? ` ${LIMIT_NOTE}` : ''}`
     const body = outs.map((o, i) => `## job ${i + 1}${list[i]!.output_path ? ` · ${String(list[i]!.output_path)}` : ''}\n${o.text}`)
-    return finish(io, cfg, [head, '', ...body].join('\n\n'), outs.flatMap(o => o.used))
+    return finish(io, cfg, [head, ...body].join('\n\n'), outs.flatMap(o => o.used))
   } finally {
     await io.progress('go_chat', undefined)
   }
