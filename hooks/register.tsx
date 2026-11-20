@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.9'
+const VERSION = '0.6.0'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -114,7 +114,7 @@ OpenCode Go is a flat-rate plan: within its limits a call costs nothing extra. S
 - The output is long and well specified (many tests, boilerplate, data conversion, code in a fixed format).
 - Everything it needs fits in the prompt and files.
 - It can be verified by tests or by running it.
-For several independent jobs, call go_chat once per job, in parallel.
+For several independent jobs, make one go_chat call with jobs: they run side by side, while separate go_chat calls run one after another.
 
 Write it yourself when:
 - It is a small change of a few lines.
@@ -145,7 +145,8 @@ const UI = {
   en: {
     commandDescription: "Show this session's OpenCode Go worker usage and plan limits",
     bandLabel: 'Go model',
-    exploring: (name: string, step: number, doing: string) => `${name} step ${step} · ${doing}`,
+    exploring: (name: string, step: number, doing: string) => (step > 0 ? `${name} step ${step} · ${doing}` : `${name} · ${doing}`),
+    batchDone: (done: number, all: number) => `${done}/${all} done`,
     exploreThinking: 'thinking',
     agentChecking: 'checking',
     agentEnd: (stop: string, turns: number, check: string) => `OpenCode Go agent finished (${stop}, ${turns} turns) · check ${check}`,
@@ -191,7 +192,8 @@ Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
   ko: {
     commandDescription: '이 세션의 OpenCode Go 워커 사용량과 플랜 한도 보기',
     bandLabel: 'Go 모델',
-    exploring: (name: string, step: number, doing: string) => `${name} ${step}단계 · ${doing}`,
+    exploring: (name: string, step: number, doing: string) => (step > 0 ? `${name} ${step}단계 · ${doing}` : `${name} · ${doing}`),
+    batchDone: (done: number, all: number) => `${done}/${all} 완료`,
     exploreThinking: '생각 중',
     agentChecking: '확인 중',
     agentEnd: (stop: string, turns: number, check: string) => `OpenCode Go 에이전트 끝 (${stop}, ${turns}턴) · 확인 ${check}`,
@@ -1061,29 +1063,17 @@ async function finish(io: IO, cfg: Config, text: string, used: Used[]) {
 
 // ───────── Tools ─────────
 
-async function chat(io: IO, cfg: Config, a: Args) {
+type ChatOut = { text: string; used: Used[] }
+
+// One go_chat job: the reply, or where it was saved, with its notes; finish() adds the limits line
+async function chatOne(io: IO, cfg: Config, a: Args, onLines?: (lines: number) => void): Promise<ChatOut> {
   const prompt = String(a.prompt ?? '')
   const outputPath = a.output_path as string | undefined
-  const ui = UI[await io.lang()]
-  const onLines = (n: number) => io.status(ui.writing(n))
-  let r: Reply
-  try {
-    if (outputPath) await checkedPath(io, cfg, outputPath, 'write') // check the path before spending allowance
-    r = await request(io, cfg, a, { prompt: outputPath ? prompt + FILE_ONLY_INSTRUCTION : prompt, toFile: !!outputPath, onLines })
-  } catch (err) {
-    // A limit error: give Claude the reset times so it can take another route
-    if (err instanceof ApiError && err.status === 429) {
-      const l = await fetchLimits(io, cfg.key)
-      if (l) await io.record([], l)
-      throw new Error(`${err.message}\nOpenCode Go limit reached. ${limitsLine(l)} Use another worker or write it yourself until the reset.`)
-    }
-    throw err
-  }
+  if (outputPath) await checkedPath(io, cfg, outputPath, 'write') // check the path before spending allowance
+  const r = await request(io, cfg, a, { prompt: outputPath ? prompt + FILE_ONLY_INSTRUCTION : prompt, toFile: !!outputPath, onLines })
   const used = r.usage ? [{ model: r.model, t: r.usage }] : []
-  if (!outputPath) {
-    const t = tail(r)
-    return finish(io, cfg, t ? `${r.content}\n\n${t}` : r.content, used)
-  }
+  const t = tail(r)
+  if (!outputPath) return { text: t ? `${r.content}\n\n${t}` : r.content, used }
   // An empty or incomplete reply must not overwrite an existing file
   let saved: string
   if (!r.content.trim()) {
@@ -1093,8 +1083,100 @@ async function chat(io: IO, cfg: Config, a: Args) {
   } else {
     saved = (await saveOutput(io, cfg, r.content, `${outputPath}.partial`)) + ` — incomplete, so saved as .partial (${outputPath} unchanged).`
   }
-  const t = tail(r)
-  return finish(io, cfg, t ? `${saved}\n${t}` : saved, used)
+  return { text: t ? `${saved}\n${t}` : saved, used }
+}
+
+const isLimitError = (err: unknown) => err instanceof ApiError && err.status === 429
+const LIMIT_NOTE = 'OpenCode Go limit reached. Use another worker or write it yourself until the reset.'
+
+async function chat(io: IO, cfg: Config, a: Args) {
+  if (a.jobs !== undefined) return chatBatch(io, cfg, a)
+  if (!String(a.prompt ?? '').trim()) throw new Error('Give prompt, or jobs for several tasks.')
+  const ui = UI[await io.lang()]
+  try {
+    const r = await chatOne(io, cfg, a, n => io.status(ui.writing(n)))
+    return finish(io, cfg, r.text, r.used)
+  } catch (err) {
+    // A limit error: give Claude the reset times so it can take another route
+    if (isLimitError(err)) {
+      const l = await fetchLimits(io, cfg.key)
+      if (l) await io.record([], l)
+      throw new Error(`${(err as Error).message}\n${LIMIT_NOTE} ${limitsLine(l)}`)
+    }
+    throw err
+  }
+}
+
+// ───────── go_chat jobs: several independent calls at once ─────────
+// Claude Code runs a plugin's tool calls one at a time, so parallel go_chat calls queue up behind each other.
+// One call with jobs runs them side by side inside the plugin instead.
+
+const BATCH_MAX_JOBS = 20
+const BATCH_CONCURRENCY = 10
+
+const strings = (v: unknown) => (Array.isArray(v) ? v.map(String) : [])
+
+// A job's arguments: the call's own fields are shared defaults, a job's fields win. Shared files come first
+// (the same prefix for every job, so the prompt cache can hit), and a shared prompt goes before the job's.
+function jobArgs(a: Args, j: Args): Args {
+  const { jobs: _jobs, prompt: shared, files: sharedFiles, ...base } = a
+  const files = [...new Set([...strings(sharedFiles), ...strings(j.files)])]
+  const own = String(j.prompt ?? '')
+  const prompt = shared ? `${String(shared)}\n\n${own}` : own
+  return { ...base, ...j, prompt, files: files.length ? files : undefined }
+}
+
+// Runs fn over 0..n-1, at most `limit` at a time, keeping the order
+async function pool<T>(n: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+  const out = new Array<T>(n)
+  let next = 0
+  const lane = async () => {
+    while (next < n) {
+      const i = next++
+      out[i] = await fn(i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, n) }, lane))
+  return out
+}
+
+async function chatBatch(io: IO, cfg: Config, a: Args) {
+  const jobs = a.jobs
+  if (!Array.isArray(jobs) || jobs.length === 0) throw new Error('jobs must be a non-empty array of { prompt, … } objects.')
+  if (jobs.length > BATCH_MAX_JOBS) throw new Error(`At most ${BATCH_MAX_JOBS} jobs per call; split them across calls.`)
+  const list = jobs.map((j, i) => {
+    if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error(`jobs[${i}] must be an object.`)
+    if (!String((j as Args).prompt ?? '').trim()) throw new Error(`jobs[${i}] has no prompt.`)
+    return jobArgs(a, j as Args)
+  })
+  const paths = list.map(j => j.output_path).filter((p): p is string => typeof p === 'string' && !!p)
+  const twice = paths.find((p, i) => paths.indexOf(p) !== i)
+  if (twice) throw new Error(`Two jobs write to the same output_path: ${twice}`)
+
+  const ui = UI[await io.lang()]
+  let done = 0
+  const show = () => io.progress('go_chat', { step: 0, doing: ui.batchDone(done, list.length) })
+  await show()
+  let limited = false
+  try {
+    const outs = await pool(list.length, BATCH_CONCURRENCY, async (i): Promise<ChatOut> => {
+      try {
+        return await chatOne(io, cfg, list[i]!)
+      } catch (err) {
+        if (isLimitError(err)) limited = true
+        return { text: `[failed] ${(err as Error).message}`, used: [] }
+      } finally {
+        done++
+        await show()
+      }
+    })
+    const failed = outs.filter(o => o.text.startsWith('[failed]')).length
+    const head = `${list.length - failed}/${list.length} jobs finished${failed ? `, ${failed} failed` : ''}.${limited ? ` ${LIMIT_NOTE}` : ''}`
+    const body = outs.map((o, i) => `## job ${i + 1}${list[i]!.output_path ? ` · ${String(list[i]!.output_path)}` : ''}\n${o.text}`)
+    return finish(io, cfg, [head, '', ...body].join('\n\n'), outs.flatMap(o => o.used))
+  } finally {
+    await io.progress('go_chat', undefined)
+  }
 }
 
 // ───────── go_agent: a small coding loop the plugin runs itself ─────────
@@ -1552,6 +1634,7 @@ Use it for long outputs such as code generation, so the full result never enters
 With output_path, max_tokens defaults to the model's output limit (at most ${FILE_MAX_TOKENS}).
 If the reply is truncated, a [truncated] line is added and it is saved to <output_path>.partial instead (the existing file is unchanged). If the reply is empty, no file is written.
 system: extra instructions appended to the worker's system prompt.
+jobs: for several independent tasks, pass them here instead of making several go_chat calls: Claude Code runs tool calls one at a time, while jobs run side by side (up to ${BATCH_CONCURRENCY} at once, ${BATCH_MAX_JOBS} per call). Each job takes prompt, files, output_path, system, model, reasoning_effort, max_tokens. The call's own fields are shared by every job and a job's fields win; shared files go first and a shared prompt goes before each job's prompt. Results come back in job order, one section each; a failed job doesn't stop the others.
 The result ends with a [usage: …] line and a [limits: …] line (5-hour, weekly and monthly plan windows).
 model: ${MODEL_NOTE}
 reasoning_effort: ${EFFORT_NOTE}`,
@@ -1566,8 +1649,24 @@ reasoning_effort: ${EFFORT_NOTE}`,
         reasoning_effort: { type: 'string', description: EFFORT_NOTE },
         temperature: { type: 'number' },
         max_tokens: { type: 'integer' },
+        jobs: {
+          type: 'array',
+          maxItems: BATCH_MAX_JOBS,
+          items: {
+            type: 'object',
+            properties: {
+              prompt: { type: 'string' },
+              files: { type: 'array', items: { type: 'string' } },
+              output_path: { type: 'string' },
+              system: { type: 'string' },
+              model: { type: 'string' },
+              reasoning_effort: { type: 'string' },
+              max_tokens: { type: 'integer' },
+            },
+            required: ['prompt'],
+          },
+        },
       },
-      required: ['prompt'],
     },
     needsKey: true,
     run: chat,

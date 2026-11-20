@@ -1000,3 +1000,48 @@ test('auto language: without an app setting, the system language is used', async
   await start($)
   expect(await goUsage($)).toContain('키 정상')
 })
+
+test('chat jobs: run together with shared files and prompt first; results in job order', async ($, on) => {
+  const w = world(on, [{ content: 'one' }, { content: 'one' }, { content: 'one' }])
+  await start($)
+  const r = await ($.tool.call as any)({
+    tool: CHAT,
+    model: 'glm-5.3-flash',
+    prompt: 'Shared rules.',
+    files: ['a.py'],
+    jobs: [
+      { prompt: 'job A', output_path: 'a.out' },
+      { prompt: 'job B', output_path: 'b.out', reasoning_effort: 'low' },
+      { prompt: 'job C' },
+    ],
+  })
+  expect(w.sent.length).toBe(3)
+  for (const b of w.sent) {
+    expect(b.messages[1].content).toMatch(/^<data id="\w{12}" source="file a.py">/)
+    expect(b.messages[1].content).toContain('Shared rules.\n\njob ')
+  }
+  expect(w.sent.filter((b: any) => b.reasoning_effort === 'low').length).toBe(1)
+  expect(Object.keys(w.written).sort()).toEqual(['a.out', 'b.out'])
+  const t = text(r)
+  expect(t).toContain('3/3 jobs finished.')
+  expect(t.indexOf('## job 1 · a.out')).toBeLessThan(t.indexOf('## job 2 · b.out'))
+  expect(t.indexOf('## job 2 · b.out')).toBeLessThan(t.indexOf('## job 3\n'))
+  expect(t).toContain('[limits:')
+})
+
+test('chat jobs: a failed job does not stop the others; bad batches are refused before any request', async ($, on) => {
+  const w = world(on, [{ content: 'fine' }])
+  await start($)
+  const r = await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash', jobs: [{ prompt: 'x', files: ['.env'] }, { prompt: 'y' }] })
+  expect(text(r)).toContain('1/2 jobs finished, 1 failed.')
+  expect(text(r)).toContain("[failed] Cannot read")
+  expect(w.sent.length).toBe(1)
+
+  const dup: any = await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash', jobs: [{ prompt: 'x', output_path: 'o' }, { prompt: 'y', output_path: 'o' }] })
+  expect(refusal(dup)).toContain('same output_path')
+  const none: any = await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash', jobs: [{ prompt: ' ' }] })
+  expect(refusal(none)).toContain('jobs[0] has no prompt')
+  const empty: any = await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash' })
+  expect(refusal(empty)).toContain('Give prompt, or jobs')
+  expect(w.sent.length).toBe(1)
+})

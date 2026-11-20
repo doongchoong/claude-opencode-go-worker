@@ -24,7 +24,7 @@ No Python, Node, server or OpenCode CLI to install. It runs inside Claude Code.
 
 | Tool | When | Returns |
 |---|---|---|
-| `go_chat` | One well-specified job with a long output | The answer, or the path of the file it wrote |
+| `go_chat` | One well-specified job with a long output, or up to 20 of them at once with `jobs` | The answer, or the path of the file it wrote |
 | `go_models` | No model has been picked yet | Limits, effort values and data-retention flags per model |
 | `go_explore` | A broad codebase question — "where is this defined?" | The answer with `path:line` evidence |
 | `go_agent` | A small coding task a test can check | Changed files, check verdict, summary |
@@ -64,6 +64,8 @@ Use go_agent to fix the failing tests; check with pytest tests/parser
 Use Go to find where this repo reads the API key
 Do this one with pro
 ```
+
+Claude Code runs a plugin's tool calls one at a time, so ten separate go_chat calls would queue up. Several independent tasks go in one call as `jobs` instead, and the plugin runs them side by side (ten at a time); the bar shows `go_chat · 3/10 done` meanwhile.
 
 Claude checks what comes back — runs the tests, reads the parts that matter — and writes it itself after two failed attempts.
 
