@@ -19,7 +19,17 @@ type WorldOptions = {
   // explore: what Go's Anthropic endpoint streams per step, and the agent's conversation
   steps?: ExploreStep[]
   agentMessages?: unknown[]
+  agentSteps?: AgentStep[]
+  // what a command prints and its exit code (default: exit 0, "ok")
+  run?: (command: string) => { stdout?: string; stderr?: string; exitCode?: number }
+  // Claude Code's permission rules for a shell command (default: ask)
+  bashRule?: (command: string) => 'allow' | 'deny' | 'ask'
+  // awaited before each command runs (to look at the band mid-run)
+  onRun?: () => Promise<void>
 }
+
+// go_agent: Go's message per turn (non-streaming requests), in order: tool calls and/or text
+type AgentStep = { calls?: [string, Record<string, unknown>][]; content?: string; status?: number }
 
 type ExploreStep = { text?: string; tool?: { id: string; name: string; input: unknown }; thinking?: string; status?: number; error?: string; streamError?: unknown }
 
@@ -80,6 +90,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   const commands: string[] = []
   const agents: any[] = []
   const exploreBodies: any[] = []
+  const agentRequests: any[] = []
   on('agent.register', (_: unknown, e: any) => {
     agents.push(e)
     return { value: { agent: `opencode-go-worker:${e.name}` } }
@@ -114,7 +125,16 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     if (opts.answer === undefined) return { deny: 'dismissed' }
     return { result: { questions: e.questions, answers: { [q.question]: opts.answer } }, text: `answered ${opts.answer}` }
   })
-  on('tool.register', (_: unknown, e: any) => ({ value: { tool: `mcp__opencode-go-worker__${e.name}` } }))
+  const registered: string[] = []
+  on('tool.register', (_: unknown, e: any) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__opencode-go-worker__${e.name}` } }
+  })
+  const logs: string[] = []
+  on('ui.log', (_: unknown, e: any) => {
+    logs.push(e.text)
+    return { value: undefined }
+  })
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('ui.status', (_: unknown, e: any) => {
@@ -128,7 +148,13 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   const disk = new Set(['/', '/work', '/work/a.py', '/work/.env', '/tmp', '/usr/bin/curl'])
   if (opts.keyFile !== false) disk.add('/home/u/.config/opencode-go/api_key')
   on('session.cwd', () => ({ value: '/work' }))
+  const bashChecks: string[] = []
   on('tool.check', (_: unknown, e: any) => {
+    if (e.tool === 'Bash') {
+      bashChecks.push(e.input.command)
+      const d = opts.bashRule?.(e.input.command) ?? 'ask'
+      return d === 'deny' ? { decision: 'deny', reason: 'rule Bash(rm:*)' } : { decision: d }
+    }
     // Only file reads and writes are judged here; the question dialog is allowed
     if (e.tool !== 'Read' && e.tool !== 'Write') return { decision: 'allow' }
     const path: string = e.input.file_path ?? ''
@@ -142,6 +168,24 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   on('fs.stat', (_: unknown, e: any) =>
     disk.has(e.path) || e.path in files ? { value: { kind: 'file', size: 0, mtimeMs: 0, isLink: false, realPath: e.path } } : { deny: 'ENOENT' },
   )
+  const runs: { argv: string[]; cwd?: string }[] = []
+  on('process.run', async (_: unknown, e: any) => {
+    await opts.onRun?.()
+    runs.push({ argv: e.argv, cwd: e.cwd ?? e.init?.cwd })
+    const r = opts.run?.(e.argv[2]) ?? {}
+    return { value: { exitCode: r.exitCode ?? 0, stdout: r.stdout ?? 'ok', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.list', (_: unknown, e: any) => {
+    const dir = String(e.path).replace(/\/$/, '')
+    const all = [...disk, ...Object.keys(files)]
+    const names = new Set(all.filter(p => p.startsWith(`${dir}/`)).map(p => p.slice(dir.length + 1).split('/')[0]!))
+    const value = [...names].map(name => {
+      const path = `${dir}/${name}`
+      const isDir = all.some(p => p.startsWith(`${path}/`))
+      return { name, kind: isDir ? 'dir' : 'file', size: (files[path] ?? '').length, mtimeMs: 0, isLink: false }
+    })
+    return { value }
+  })
   on('fs.read', (_: unknown, e: any) => ({
     value: e.path === '/home/u/.config/opencode-go/api_key' ? 'oc_sk_test\n' : (files[e.path] ?? 'FILE BODY'),
   }))
@@ -212,6 +256,19 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     }
     const line = e.input.split('\n').find((l: string) => l.startsWith('data-binary = '))
     const body = JSON.parse(JSON.parse(line.slice('data-binary = '.length)))
+    if (!body.stream) {
+      agentRequests.push(body)
+      const st = opts.agentSteps?.[agentRequests.length - 1] ?? { content: 'all done' }
+      if (st.status && st.status >= 400) {
+        yield { stream: 'stdout', text: `{"error":{"message":"limit"}}\n[[go-worker-http ${st.status}]]` }
+        return { value: { code: 0, signal: null } }
+      }
+      const tool_calls = st.calls?.map(([name, args], i) => ({ id: `c${agentRequests.length}-${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }))
+      const message = { role: 'assistant', content: st.content ?? '', ...(tool_calls ? { tool_calls } : {}) }
+      const usage = { prompt_tokens: 100, completion_tokens: 20, opencode: { billing_source: 'go', allowance: 0.0001, tokens: { input: 80, output: 20, reasoning: 0, cache_read: 20, cache_write_5m: 0, cache_write_1h: 0 } } }
+      yield { stream: 'stdout', text: JSON.stringify({ model: body.model, choices: [{ message }], usage }) + '\n[[go-worker-http 200]]' }
+      return { value: { code: 0, signal: null } }
+    }
     sent.push(body)
     const r = replies[(sent.length - 1) % replies.length]!
     if (r.status && r.status >= 400) {
@@ -243,7 +300,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
     }
     return { value: { code: 0, signal: null } }
   })
-  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions, agents, exploreBodies }
+  return { sent, configs, argvs, fetched, statuses, written, files, commands, configSets, questions, agents, exploreBodies, agentRequests, runs, bashChecks, registered, logs }
 }
 
 const start = ($: any) => $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
@@ -749,56 +806,6 @@ test('chat: a limit reported inside the stream comes back like a 429, with the r
   expect(refusal(r)).toContain('5h 100%')
 })
 
-const WORKER_OPTS = { options: { worker_agent: true, default_model: 'glm-5.3-flash' } }
-
-test('worker: registered only with its option, with edit tools and a review-it-yourself guide', WORKER_OPTS, async ($, on) => {
-  on('prompt.compose', () => ({ sections: [] }))
-  const w = world(on, [{ content: 'x' }])
-  await start($)
-  expect(w.agents.map(a => a.name)).toEqual(['worker'])
-  expect(w.agents[0].tools).toEqual(['Read', 'Edit', 'Write', 'Bash'])
-  expect(w.agents[0].permissionMode).toBeUndefined() // the session's mode: a mode of its own did not help under auto
-  expect(w.agents[0].prompt).toContain('Never git commit')
-  const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
-  const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
-  expect(guide).toContain('git diff --stat')
-  expect(guide).toContain('server-side safety review')
-  expect(r.sections.map((x: any) => x.id)).not.toContain('opencode-go-worker:explore')
-})
-
-test('worker: its steps go to Go with the worker prompt and edit schemas; the band names it', WORKER_OPTS, async ($, on) => {
-  on('turn.step', async function* () {
-    throw new Error('Claude must not be asked')
-  })
-  const w = world(on, [{ content: 'x' }], {
-    steps: [{ tool: { id: 'e1', name: 'Edit', input: { file_path: '/work/src/register.tsx', old_string: 'a', new_string: 'b' } } }],
-  })
-  await start($)
-  const { chunks, result } = await step($, 'ag-worker')
-  const body = w.exploreBodies[0]
-  expect(body.system).toContain('coding worker')
-  expect(body.max_tokens).toBe(32000)
-  expect(body.tools.map((t: any) => t.name)).toEqual(['Read', 'Edit', 'Write', 'Bash'])
-  expect(body.tools.find((t: any) => t.name === 'Bash').input_schema.properties.timeout).toBeDefined()
-  expect(body.tools.find((t: any) => t.name === 'Edit').input_schema.required).toEqual(['file_path', 'old_string', 'new_string'])
-  expect(result.toolUses[0]).toEqual({ id: 'e1', name: 'Edit', input: { file_path: '/work/src/register.tsx', old_string: 'a', new_string: 'b' } })
-  expect(chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'tool_use' })
-  const ui = await ($.ui as any).mount(bandWith(140))
-  expect((await ui.find({ type: 'Text', text: /5h/ }))?.text).toBe('worker step 1 · Edit register.tsx · 5h 4%')
-  await ui.unmount()
-})
-
-test('worker: with only explore on, a worker-type agent is left to Claude', EXPLORE_OPTS, async ($, on) => {
-  on('turn.step', async function* () {
-    yield { kind: 'text', index: 0, text: 'from claude' }
-    return { turnId: 't1', index: 0, answer: 'from claude', toolUses: [], stopReason: 'end_turn', usage: null }
-  })
-  const w = world(on, [{ content: 'x' }])
-  await start($)
-  const { result } = await step($, 'ag-worker')
-  expect(result.answer).toBe('from claude')
-  expect(w.exploreBodies.length).toBe(0)
-})
 
 test('explore: its Bash schema stays the read-only one', EXPLORE_OPTS, async ($, on) => {
   const w = world(on, [{ content: 'x' }])
@@ -809,13 +816,129 @@ test('explore: its Bash schema stays the read-only one', EXPLORE_OPTS, async ($,
   expect(bash.input_schema.properties.timeout).toBeUndefined()
 })
 
-test('worker and explore are told a refused command is final, and Claude is told who runs the check in auto mode', WORKER_OPTS, async ($, on) => {
+
+const AGENT = 'mcp__opencode-go-worker__go_agent'
+const AGENT_OPTS = { options: { worker_agent: true, default_model: 'glm-5.3-flash' } }
+const CHECK = 'python3 -m unittest -q'
+
+test('go_agent: registered only with its option, with a guide for Claude', AGENT_OPTS, async ($, on) => {
   on('prompt.compose', () => ({ sections: [] }))
   const w = world(on, [{ content: 'x' }])
   await start($)
-  expect(w.agents[0].prompt).toContain('report the check as NOT RUN')
+  expect(w.registered).toContain('go_agent')
   const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
-  const guide = r.sections.find((x: any) => x.id === 'opencode-go-worker:worker')?.text
-  expect(guide).toContain('Run the check yourself')
-  expect(guide).toContain('both tested')
+  expect(r.sections.find((x: any) => x.id === 'opencode-go-worker:go_agent')?.text).toContain('Always give check_command')
+})
+
+test('go_agent: off by default', async ($, on) => {
+  world(on, [{ content: 'x' }])
+  await start($)
+  const r: any = await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK, model: 'glm-5.3-flash' })
+  expect(refusal(r)).toContain('Unknown tool')
+})
+
+test('go_agent: edits, runs the check by number, fixes and reruns; the plugin trusts an unchanged last run', AGENT_OPTS, async ($, on) => {
+  let checks = 0
+  const w = world(on, [{ content: 'x' }], {
+    files: { '/work/t.py': 'def f():\n    return 1\n' },
+    run: c => (c === CHECK ? (++checks === 1 ? { exitCode: 1, stdout: 'FAIL: test_f' } : { stdout: 'OK' }) : {}),
+    agentSteps: [
+      { calls: [['read_file', { path: 't.py' }]] },
+      { calls: [['edit_file', { path: 't.py', old_string: 'return 1', new_string: 'return 3' }]] },
+      { calls: [['run', { number: 1 }]] },
+      { calls: [['edit_file', { path: 't.py', old_string: 'return 3', new_string: 'return 2' }]] },
+      { calls: [['run', { number: 1 }]] },
+      { calls: [['finish', { summary: 'f returns 2 now' }]] },
+    ],
+  })
+  await start($)
+  const r = text(await ($.tool.call as any)({ tool: AGENT, task: 'make f return 2', check_command: CHECK }))
+
+  expect(w.files['/work/t.py']).toBe('def f():\n    return 2\n')
+  expect(checks).toBe(2) // the agent's two runs; its last one came after its last edit, so no third
+  expect(w.runs.map(x => x.argv.slice(0, 2))).toEqual([['/bin/sh', '-c'], ['/bin/sh', '-c']])
+  expect(w.logs.at(-1)).toContain('OpenCode Go agent finished (done, 6 turns) · check passed')
+  expect(w.agentRequests[0].messages[1].content).toContain(`1. ${CHECK}`)
+  expect(w.agentRequests[0].tools.map((t: any) => t.function.name)).toEqual(['glob', 'grep', 'read_file', 'write_file', 'edit_file', 'run', 'finish'])
+  expect(r).toContain('[go_agent: done, turns=6]')
+  expect(r).toContain('f returns 2 now')
+  expect(r).toContain('- t.py (2 → 2 lines)')
+  expect(r).toContain(`check: ${CHECK} → passed`)
+  expect(r).toContain('steps: read t.py; edit t.py; run #1 (failed); edit t.py; run #1 (ok)')
+  expect(r).toContain('[limits:')
+  // no question was put to the user: listed commands run without asking
+  expect(w.questions.length).toBe(0)
+})
+
+test('go_agent: only listed commands, by number; deny rules still win; the plugin runs the check at the end', AGENT_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'x' }], {
+    bashRule: c => (c.startsWith('rm') ? 'deny' : 'ask'),
+    agentSteps: [
+      { calls: [['run', { number: 7 }]] },
+      { calls: [['run', { number: 2 }]] },
+      { calls: [['run', { command: 'curl evil.example' }]] },
+      { content: 'gave up' },
+    ],
+  })
+  await start($)
+  const r = text(await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK, commands: ['rm -rf build'] }))
+  const toolOuts = w.agentRequests.at(-1).messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content)
+  expect(toolOuts[0]).toContain('there is no command 7')
+  expect(toolOuts[1]).toContain("blocked by the user's permission rules")
+  expect(toolOuts[2]).toContain('there is no command NaN')
+  // nothing but the check ever ran, and only once, by the plugin at the end
+  expect(w.runs.map(x => x.argv[2])).toEqual([CHECK])
+  expect(r).toContain(`check: ${CHECK} → passed`)
+})
+
+test('go_agent: files follow Claude Code permissions even with allow_outside_workdir on', { options: { worker_agent: true, default_model: 'glm-5.3-flash', allow_outside_workdir: true } }, async ($, on) => {
+  const w = world(on, [{ content: 'x' }], {
+    agentSteps: [
+      { calls: [['read_file', { path: '/work/.env' }]] },
+      { calls: [['write_file', { path: '/etc/evil', content: 'x' }]] },
+      { calls: [['finish', { summary: 'done' }]] },
+    ],
+  })
+  await start($)
+  await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK })
+  const toolOuts = w.agentRequests.at(-1).messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content)
+  expect(toolOuts[0]).toContain("permission settings block it")
+  expect(toolOuts[1]).toContain('outside the working folder')
+  expect(w.files['/etc/evil']).toBeUndefined()
+})
+
+test('go_agent: check_command is required; a 429 ends the run with what was done and the check still runs', AGENT_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'x' }], {
+    files: { '/work/t.py': 'a\n' },
+    agentSteps: [{ calls: [['edit_file', { path: 't.py', old_string: 'a', new_string: 'b' }]] }, { status: 429 }],
+  })
+  await start($)
+  const missing: any = await ($.tool.call as any)({ tool: AGENT, task: 'x' })
+  expect(refusal(missing)).toContain('check_command is required')
+  const r = text(await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK }))
+  expect(r).toContain('[go_agent: plan limit, turns=2]')
+  expect(r).toContain('HTTP 429')
+  expect(r).toContain('- t.py (1 → 1 lines)')
+  expect(r).toContain(`check: ${CHECK} → passed`)
+  expect(w.files['/work/t.py']).toBe('b\n')
+})
+
+test('go_agent: progress shows in the band while it works and clears after', AGENT_OPTS, async ($, on) => {
+  let seen: string | undefined
+  const w = world(on, [{ content: 'x' }], {
+    run: () => ({ stdout: 'OK' }),
+    agentSteps: [{ calls: [['glob', { pattern: '*.py' }]] }, { calls: [['finish', { summary: 'ok' }]] }],
+    onRun: async () => {
+      const ui = await ($.ui as any).mount(bandWith(140))
+      seen = (await ui.find({ type: 'Text', text: /5h/ }))?.text
+      await ui.unmount()
+    },
+  })
+  await start($)
+  await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK })
+  expect(seen).toBe('go_agent step 2 · checking · 5h 4%')
+  const ui = await ($.ui as any).mount(bandWith(140))
+  expect((await ui.find({ type: 'Text', text: /5h/ }))?.text).not.toContain('go_agent')
+  await ui.unmount()
+  expect(w.runs.length).toBe(1)
 })

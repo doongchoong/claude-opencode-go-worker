@@ -75,7 +75,8 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 3. ~~**테스트 + README**~~ (영어/한국어, 완료)
 4. ~~**v0.2 스파이크**~~ (완료, spike/FINDINGS.md C절): `turn.step`에서 `next` 없이 만든 응답이 transcript에 tool_use로 남고 실제 실행되는지. 막히면 explore 아이디어 폐기.
 5. ~~**v0.2 explore 서브에이전트**~~ (구현, 실제 세션 확인 대기): thinking 블록 제거, 스키마 첨부, usage를 `stop` 청크로 보고.
-6. **v0.3 worker 서브에이전트** (구현): explore와 같은 turn.step 방식으로 Read/Edit/Write/Bash. 확인 명령 필수, 커밋 금지, Claude가 diff 검토. 서버 측 안전 분류기는 Go 스텝을 볼 수 없음(README 참고).
+6. ~~**v0.3 worker 서브에이전트**~~ (폐기): turn.step 서브에이전트는 auto 모드에서 명령을 못 돌림(분류기 판정 없음; 허용 규칙·acceptEdits 모두 실패, 실측).
+6-1. **v0.4 go_agent 도구** (구현): deepseek_agent처럼 플러그인이 루프를 직접 돌림. 파일은 Claude Code 권한 그대로, 명령은 Claude가 호출에 적은 목록만 번호로 실행(묻지 않음, deny 규칙 우선). 반복 동안 Claude 토큰 0.
 7. (나중) deepseek-worker 정리: batch/agent 정리, explore 서브에이전트를 DeepSeek에도 적용 검토.
 
 ## 5. 리스크

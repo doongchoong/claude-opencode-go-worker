@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Let Claude hand off well-specified, verifiable work to OpenCode Go models as a flat-rate worker, with allowance usage in the status line.",
   "author": {
     "name": "doongchoong"
@@ -43,8 +43,8 @@
     },
     "worker_agent": {
       "type": "boolean",
-      "title": "Coding worker subagent (experimental)",
-      "description": "Registers opencode-go-worker:worker, a subagent that reads, edits and writes files and runs commands, with its model steps on OpenCode Go instead of Claude. Every tool call passes Claude Code's permission checks; its steps are not seen by the server-side safety review, so Claude is told to review its diff and rerun the check. Uses the model picked with /go-model.",
+      "title": "go_agent coding tool (experimental)",
+      "description": "Registers go_agent: a small OpenCode Go coding agent the plugin runs inside one tool call. It reads, edits and writes files where Claude may without asking, and runs only the exact commands Claude lists in the call (a check plus up to 4 more), without asking you; your deny rules still win. Uses the model picked with /go-model.",
       "default": false
     },
     "language": {
