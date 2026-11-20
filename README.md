@@ -14,7 +14,7 @@ No Python, Node, server or OpenCode CLI to install. It runs inside Claude Code.
 
 ## On screen
 
-![The model bar and status line in the Claude Code desktop app](screenshot.png)
+![The model bar and status line in the Claude Code desktop app](screenshot.en.png)
 
 - **The bar above the prompt**: the model in use and this session's usage. Switch models in the dropdown; each one shows roughly how many requests fit in 5 hours. The `5h` figure turns yellow past 80% and red at the limit. On a narrow window the less important figures drop out first.
 - **The status line**: just how much of the plan's 5-hour window is used — and a sign the plugin is loaded.
