@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.3'
+const VERSION = '0.5.4'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -1807,7 +1807,8 @@ export const register: Register = (on, options) => {
       ...(current ? [] : [{ value: '', label: t.bandPick }]),
       ...ids.map(id => {
         const est = estLabel(id, onPlan, byModel[id])
-        return est ? { value: id, label: `${id}  ${est}` } : { value: id }
+        // In brackets, so the figure doesn't read as part of the model's name
+        return est ? { value: id, label: `${id} (${est})` } : { value: id }
       }),
     ]
     if (options.length === 0) return next(e)

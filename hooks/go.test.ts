@@ -925,13 +925,13 @@ test('the dropdown labels each model with the console estimate of requests per 5
     return Object.fromEntries(options.map(o => [o.value, o.label]))
   }
   const before = await labels()
-  expect(before['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~43.3K/5h')
-  expect(before['glm-5.3-flash']).toBe('glm-5.3-flash  ~6.3K/5h')
-  expect(before['kimi-k2.7-code']).toBe('kimi-k2.7-code  $60/mo') // not on the page: its monthly limit instead
+  expect(before['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash (~43.3K/5h)')
+  expect(before['glm-5.3-flash']).toBe('glm-5.3-flash (~6.3K/5h)')
+  expect(before['kimi-k2.7-code']).toBe('kimi-k2.7-code ($60/mo)') // not on the page: its monthly limit instead
   await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
   const after = await labels()
-  expect(after['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~86.7K/5h')
-  expect(after['glm-5.3-flash']).toBe('glm-5.3-flash  ~18.9K/5h')
+  expect(after['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash (~86.7K/5h)')
+  expect(after['glm-5.3-flash']).toBe('glm-5.3-flash (~18.9K/5h)')
 })
 
 test('the estimates survive a redesigned page: no ids, other markup, K numbers, matched by display name', async ($, on) => {
@@ -941,9 +941,9 @@ test('the estimates survive a redesigned page: no ids, other markup, K numbers, 
   const options = (await ui.find({ type: 'Select' }))?.props.options as any[]
   await ui.unmount()
   const label = Object.fromEntries(options.map(o => [o.value, o.label]))
-  expect(label['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~43.3K/5h')
-  expect(label['glm-5.3-flash']).toBe('glm-5.3-flash  ~6.3K/5h')
-  expect(label['kimi-k2.7-code']).toBe('kimi-k2.7-code  ~994/5h')
+  expect(label['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash (~43.3K/5h)')
+  expect(label['glm-5.3-flash']).toBe('glm-5.3-flash (~6.3K/5h)')
+  expect(label['kimi-k2.7-code']).toBe('kimi-k2.7-code (~994/5h)')
 })
 
 test('a page with too few readable models is not trusted', async ($, on) => {
@@ -955,8 +955,8 @@ test('a page with too few readable models is not trusted', async ($, on) => {
   // not trusted, so each model falls back to its monthly limit from /v1/models
   expect(Object.fromEntries(options.map(o => [o.value, o.label]))).toEqual({
     '': '— pick a model —',
-    'deepseek-v4.1-flash': 'deepseek-v4.1-flash  $100/mo',
-    'glm-5.3-flash': 'glm-5.3-flash  $60/mo',
-    'kimi-k2.7-code': 'kimi-k2.7-code  $60/mo',
+    'deepseek-v4.1-flash': 'deepseek-v4.1-flash ($100/mo)',
+    'glm-5.3-flash': 'glm-5.3-flash ($60/mo)',
+    'kimi-k2.7-code': 'kimi-k2.7-code ($60/mo)',
   })
 })
