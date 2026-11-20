@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Let Claude hand off well-specified, verifiable work to OpenCode Go models as a flat-rate worker, with allowance usage in the status line.",
   "author": {
     "name": "doongchoong"
@@ -37,8 +37,8 @@
     },
     "explore_agent": {
       "type": "boolean",
-      "title": "Read-only explore subagent (experimental)",
-      "description": "Registers opencode-go-worker:explore, a read-only search subagent (Read and read-only shell commands) whose model steps go to OpenCode Go instead of Claude. Commands still pass Claude Code's permission checks. Uses the model picked with /go-model.",
+      "title": "go_explore search tool (experimental)",
+      "description": "Registers go_explore: Go answers a question about the codebase by finding, searching and reading files on its own (only where Claude may read without asking), and returns just the answer with path:line evidence. It changes nothing and runs no commands. Uses the model picked with /go-model.",
       "default": false
     },
     "worker_agent": {
