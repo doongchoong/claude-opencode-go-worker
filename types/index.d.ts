@@ -30,6 +30,7 @@ declare module 'claude-code' {
       // Shared by every session
       limits: Shaped<Limits>
       uiLang: Shaped<UiLang>
+      plan: Shaped<string | null>
       // One per session id: the session's own usage, picked model and agents at work
       totalsBySession: StateFamily<Usage>
       modelBySession: StateFamily<string>

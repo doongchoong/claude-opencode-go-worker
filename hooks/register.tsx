@@ -48,16 +48,22 @@ type IO = {
   log: (text: string) => void
   // go_agent's progress in the band above the prompt; undefined clears it
   progress: (name: string, p: { step: number; doing: string } | undefined) => Promise<void>
+  // The plugin's store across sessions (JSON data)
+  storeGet: (key: string) => Promise<unknown>
+  storeSet: (key: string, value: unknown) => Promise<void>
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.1'
+const VERSION = '0.5.3'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
 const API_BASE = 'https://opencode.ai/inference/go'
 const CHAT_URL = `${API_BASE}/openai/v1/chat/completions`
 const MODELS_URL = `${API_BASE}/v1/models`
+// The console's Go page: its model table has the estimated requests per 5 hours per plan, which no API gives
+const CONSOLE_GO_URL = 'https://opencode.ai/console/go'
+const EST_TTL_MS = 12 * 60 * 60_000
 const LIMITS_URL = 'https://opencode.ai/zen/go/v1/usage'
 
 // ───────── Text the model reads ─────────
@@ -400,6 +406,122 @@ type Model = {
 }
 
 let modelsCache: { at: number; list: Model[] } | undefined
+
+// Estimated requests per 5 hours, by model id and plan, as the console's Go page shows them ("43,300").
+// No API gives them, so they are read from that public page. The parser leans on as little of the page as
+// it can, so a new look (sizes, colours, class names, tags) doesn't break it:
+// - the text "Go: 43,300; Go Plus: 86,700" (or "Go 43,300 · Go Plus 86,700", "43.3K"), told apart from the
+//   dollar line next to it ("Go: $100; Go Plus: $200") by the $;
+// - which model a line belongs to: the nearest data-model="<id>" before it, or else the model's display name
+//   from /v1/models ("DeepSeek V4.1 Flash 1017") before it.
+// A result is taken only if it covers several models; the last good one is kept across sessions and used for
+// up to EST_KEEP_MS when the page can't be read. Information only: nothing is decided from these numbers.
+type Est = { go?: number; plus?: number }
+let estCache: { at: number; byId: Record<string, Est> } | undefined
+const EST_STORE_KEY = 'consoleEstimates'
+const EST_KEEP_MS = 14 * 24 * 60 * 60_000
+const EST_MIN_MODELS = 5
+
+// "43,300" → 43300, "43.3K" → 43300, "1.2M" → 1200000; anything else (unlimited, $) → undefined
+function estNumber(v: string | undefined) {
+  const m = v && /^(\d[\d,]*(?:\.\d+)?)\s*([KkMm])?$/.exec(v.trim())
+  if (!m) return undefined
+  const n = Number(m[1]!.replace(/,/g, '')) * (m[2] ? (/[Kk]/.test(m[2]) ? 1000 : 1_000_000) : 1)
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined
+}
+
+// The page as plain text, with each data-model="<id>" kept as a marker the text can be cut on
+function pageText(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*\bdata-model="([^"]+)"[^>]*>/gi, ' \u0001$1\u0002 ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&#x27;|&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, ' ')
+}
+
+// The first "Go … Go Plus …" pair of request counts in a piece of text (dollar pairs don't match)
+const PAIR = /\bGo\s*:?\s*(\d[\d,]*(?:\.\d+)?\s*[KkMm]?)\s*[;,·|/–-]?\s*Go\s*Plus\s*:?\s*(\d[\d,]*(?:\.\d+)?\s*[KkMm]?)(?![\d,.])/i
+function pairIn(text: string): Est | undefined {
+  const m = PAIR.exec(text)
+  if (!m) return undefined
+  const go = estNumber(m[1])
+  const plus = estNumber(m[2])
+  return go !== undefined || plus !== undefined ? { go, plus } : undefined
+}
+
+// How many models a parse must cover to be trusted: several, or every priced model when the lineup is small
+const estEnough = (models: Model[]) => Math.min(EST_MIN_MODELS, Math.max(1, models.filter(m => !isFree(m)).length || EST_MIN_MODELS))
+
+function parseEst(html: string, models: Model[]): Record<string, Est> {
+  const text = pageText(html)
+  const byId: Record<string, Est> = {}
+  // By model id markers: each id owns the text up to the next id
+  const parts = text.split('\u0001').slice(1)
+  for (const part of parts) {
+    const end = part.indexOf('\u0002')
+    if (end < 0) continue
+    const id = part.slice(0, end)
+    const e = pairIn(part.slice(end + 1))
+    if (e && !byId[id]) byId[id] = e
+  }
+  if (Object.keys(byId).length >= estEnough(models)) return byId
+  // No id markers: by display name, the first pair after it (before the next model's name)
+  // Longer names first, so a name that is the start of another ("Hy4" in "Hy4 preview") can't take its place
+  const taken: [number, number][] = []
+  const named: { id: string; name: string; at: number }[] = []
+  for (const m of models.filter(x => x.name).sort((a, b) => b.name!.length - a.name!.length)) {
+    const name = m.name!
+    let at = text.indexOf(name)
+    while (at >= 0 && (taken.some(([s, e]) => at < e && at + name.length > s) || /[\w.]/.test(text[at + name.length] ?? ''))) {
+      at = text.indexOf(name, at + 1)
+    }
+    if (at < 0) continue
+    taken.push([at, at + name.length])
+    named.push({ id: m.id, name, at })
+  }
+  named.sort((a, b) => a.at - b.at)
+  named.forEach((x, i) => {
+    const e = pairIn(text.slice(x.at + x.name.length, named[i + 1]?.at ?? text.length))
+    if (e && !byId[x.id]) byId[x.id] = e
+  })
+  return byId
+}
+
+async function loadEst(io: IO) {
+  if (estCache && Date.now() - estCache.at < EST_TTL_MS) return
+  try {
+    const r = await io.fetch(CONSOLE_GO_URL, { headers: { 'User-Agent': USER_AGENT } })
+    if (r.ok) {
+      const models = await listModels(io).catch(() => [] as Model[])
+      const byId = parseEst(r.text, models)
+      if (Object.keys(byId).length >= estEnough(models)) {
+        estCache = { at: Date.now(), byId }
+        await io.storeSet(EST_STORE_KEY, estCache).catch(() => {})
+        return
+      }
+    }
+  } catch {}
+  // The page couldn't be read or parsed: the last good numbers, while they are recent enough
+  try {
+    const kept = (await io.storeGet(EST_STORE_KEY)) as typeof estCache
+    if (kept && typeof kept.at === 'number' && Date.now() - kept.at < EST_KEEP_MS && kept.byId) estCache = kept
+  } catch {}
+}
+
+// For the user's plan (Go until a response has said otherwise): the console's "~43.3K/5h" when it could be
+// read, else the monthly limit from /v1/models ("$100/mo"), which always comes from the API; undefined if neither
+function estLabel(id: string, plan: string | null, model?: Model) {
+  const e = estCache?.byId[id]
+  const n = plan === 'go-plus' ? (e?.plus ?? e?.go) : e?.go
+  if (n !== undefined) return `~${n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K` : n}/5h`
+  const mu = model?.go?.monthly_usage
+  const usd = mu ? (plan && plan in mu ? mu[plan] : mu.go) : undefined
+  return typeof usd === 'number' ? `$${usd}/mo` : undefined
+}
 
 // The model list is public (no key), so it is fetched with $.http and kept for a while
 async function listModels(io: IO): Promise<Model[]> {
@@ -750,6 +872,8 @@ async function saveOutput(io: IO, cfg: Config, content: string, outputPath: stri
 const EMPTY: Usage = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, allowance: 0, lastIn: 0, lastOut: 0, model: '' }
 // Bump the shape tag when the fields change: values saved by an older version are dropped for the initial value
 const limits = atom({ plugin: 'opencode-go-worker', key: 'limits' } as const, null as Limits, { shape: 'limits-1' })
+// The plan the workspace is on, as the last response's billing_source said (go, go-plus, ...): shared, it's the account's
+const plan = atom({ plugin: 'opencode-go-worker', key: 'plan' } as const, null as string | null, { shape: 'plan-1' })
 const uiLang = atom({ plugin: 'opencode-go-worker', key: 'uiLang' } as const, null as UiLang, { shape: 'uiLang-1' })
 // What belongs to one session is kept per session id: the plugin's state is shared by every session the app
 // runs (seen live: a model picked in one session's dropdown showed up in another's). The plan windows and the
@@ -1497,6 +1621,9 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
     },
     record: async (used, l) => {
       await update($, { plugin: 'opencode-go-worker', key: 'totalsBySession', id: await $.session.id() } as const, prev => addUsage(prev ?? EMPTY, used))
+      // Only the plans themselves: billed outside the allowance (balance) says nothing about the plan
+      const billed = used.map(u => u.t.billing).filter((b): b is string => !!b && /^go(-|$)/.test(b)).pop()
+      if (billed) await update($, plan, () => billed)
       const lim = l ? await update($, limits, () => l) : await read($, limits)
       $.ui.status(statusText(lim))
     },
@@ -1507,6 +1634,8 @@ function makeIO($: EngineInterface, langOption: unknown): IO {
     },
     checkCommand: command => $.tool.check({ tool: 'Bash', input: { command } } as Parameters<typeof $.tool.check>[0]),
     log: text => $.ui.log(text),
+    storeGet: key => $.store.get(key),
+    storeSet: (key, value) => $.store.set(key, value),
     progress: async (name, p) =>
       void (await update($, { plugin: 'opencode-go-worker', key: 'exploringBySession', id: await $.session.id() } as const, x => {
         const rest = Object.fromEntries(Object.entries(x ?? {}).filter(([k]) => k !== name))
@@ -1626,6 +1755,7 @@ export const register: Register = (on, options) => {
       const fresh = await fetchLimits(io, await findKey(io, opts.optionKey, await homeDir(io)))
       if (fresh) await update($, limits, () => fresh)
     } catch {}
+    await loadEst(makeIO($, langOption))
     await showStatus($, langOption)
     return next(e)
   })
@@ -1664,17 +1794,30 @@ export const register: Register = (on, options) => {
     const t = UI[await langOf($, langOption)]
     const current = await modelOf($)
     let ids: string[] = []
+    let byModel: Record<string, Model> = {}
     try {
-      ids = pickerOrder(await listModels(makeIO($, langOption))).map(m => m.id)
+      const listed = pickerOrder(await listModels(makeIO($, langOption)))
+      ids = listed.map(m => m.id)
+      byModel = Object.fromEntries(listed.map(m => [m.id, m]))
     } catch {}
     if (current && !ids.includes(current)) ids.unshift(current)
-    const options = [...(current ? [] : [{ value: '', label: t.bandPick }]), ...ids.map(id => ({ value: id }))]
+    // Each model with the console's estimate of requests per 5 hours on the user's plan, for information
+    const onPlan = await read($, plan)
+    const options = [
+      ...(current ? [] : [{ value: '', label: t.bandPick }]),
+      ...ids.map(id => {
+        const est = estLabel(id, onPlan, byModel[id])
+        return est ? { value: id, label: `${id}  ${est}` } : { value: id }
+      }),
+    ]
     if (options.length === 0) return next(e)
     const elements = $.ui.resolve(e)
     if (!('Select' in elements)) return next(e) // a surface with no dropdown (the mobile app): /go-model still works
     const { Box, Select, Text } = elements
     // Usage beside the dropdown, fitted to what is left of the row after the dropdown's own width
-    const longest = Math.max(...options.map(o => cells(('label' in o ? o.label : undefined) ?? o.value)))
+    // A closed dropdown shows the selected option only: budget for its label, not the longest in the list
+    const shown = options.find(o => o.value === (current || '')) ?? options[0]!
+    const longest = cells(('label' in shown ? shown.label : undefined) ?? shown.value)
     const room = e.props.bodyColumns - (cells(t.bandLabel) + longest + 8)
     const lang = await langOf($, langOption)
     const lim = await read($, limits)

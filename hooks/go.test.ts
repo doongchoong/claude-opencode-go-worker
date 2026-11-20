@@ -24,6 +24,8 @@ type WorldOptions = {
   run?: (command: string) => { stdout?: string; stderr?: string; exitCode?: number }
   // Claude Code's permission rules for a shell command (default: ask)
   bashRule?: (command: string) => 'allow' | 'deny' | 'ask'
+  // the console Go page's HTML (undefined: the page answers 404)
+  consoleHtml?: string
   // awaited before each command runs (to look at the band mid-run)
   onRun?: () => Promise<void>
 }
@@ -38,6 +40,7 @@ const MODEL_LIST = {
   data: [
     {
       id: 'glm-5.3-flash',
+      name: 'GLM-5.3-Flash',
       family: 'glm-flash',
       capabilities: { tools: { supported: true }, reasoning: { supported: true, effort: ['low', 'high', 'max'] } },
       limit: { context: 1000000, output: 131072 },
@@ -46,6 +49,7 @@ const MODEL_LIST = {
     },
     {
       id: 'deepseek-v4.1-flash',
+      name: 'DeepSeek V4.1 Flash 1017',
       family: 'deepseek-flash',
       capabilities: { tools: { supported: true }, reasoning: { supported: true, effort: ['low', 'high', 'max'] } },
       limit: { context: 1000000, output: 384000 },
@@ -56,6 +60,7 @@ const MODEL_LIST = {
     },
     {
       id: 'kimi-k2.7-code',
+      name: 'Kimi K2.7 Code',
       capabilities: { tools: { supported: true } },
       limit: { context: 262144, output: 262144 },
       go: { monthly_usage: { go: 60, 'go-plus': 180 }, training: true, zdr: false },
@@ -198,6 +203,11 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   })
   on('http.fetch', (_: unknown, e: any) => {
     fetched.push({ url: e.url, headers: e.headers ?? {} })
+    if (e.url === 'https://opencode.ai/console/go') {
+      return opts.consoleHtml === undefined
+        ? { value: { status: 404, ok: false, headers: {}, text: 'not found' } }
+        : { value: { status: 200, ok: true, headers: {}, text: opts.consoleHtml } }
+    }
     if (e.url.endsWith('/inference/go/v1/models')) return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(MODEL_LIST) } }
     if (e.url.endsWith('/zen/go/v1/usage')) {
       const s = opts.limitsStatus ?? 200
@@ -618,7 +628,7 @@ test('the band shows usage beside the dropdown, dropping details first when narr
   const narrow = await ($.ui as any).mount(bandWith(60))
   expect((await narrow.find({ type: 'Text', text: /5h/ }))?.text).toBe('1 call · 5h 4% · wk 1%')
   await narrow.unmount()
-  const tight = await ($.ui as any).mount(bandWith(45))
+  const tight = await ($.ui as any).mount(bandWith(38))
   expect((await tight.find({ type: 'Text', text: /5h/ }))?.text).toBe('5h 4%')
   await tight.unmount()
 })
@@ -875,3 +885,78 @@ test('sessions keep their own picked model, usage and band; a pick in one sessio
   expect((await band()).usage).toBe('2 calls · 8.0Ktok · cache 81% · $0.0004 · 5h 4% · wk 1%')
 })
 
+
+// Rows shaped like the console Go page's model table
+const consoleRow = (id: string, go: string, plus: string) =>
+  `<tr data-model="${id}" data-layer="model-row"><th scope="row"><span title="x">x</span></th><td aria-hidden="true">bars</td>` +
+  `<td data-allowance-type="requests"><div><span>${go}</span></div><span class="sr-only">Go: ${go}; Go Plus: ${plus}</span></td>` +
+  `<td data-allowance-type="monthly"><span class="sr-only">Go: $100; Go Plus: $200</span></td></tr>`
+const CONSOLE =
+  '<table><tbody>' +
+  consoleRow('deepseek-v4.1-flash', '43,300', '86,700') +
+  consoleRow('glm-5.3-flash', '6,320', '18,900') +
+  consoleRow('kimi-k3', '98', '392') +
+  consoleRow('gpt-6-luna', '4,230', '16,900') +
+  consoleRow('qwen3.8-flash', '5,400', '16,200') +
+  consoleRow('beam-free', 'unlimited', 'unlimited') +
+  '</tbody></table>'
+
+// A redesign: no data-model ids, no table, other words around the numbers, but the same "Go … Go Plus …" text
+const REDESIGNED =
+  '<section>' +
+  [
+    ['DeepSeek V4.1 Flash 1017', '43.3K', '86.7K'],
+    ['GLM-5.3-Flash', '6,320', '18,900'],
+    ['Kimi K2.7 Code', '994', '2,980'],
+    ['GPT-6 Luna', '4,230', '16,900'],
+  ]
+    .map(([n, g, p]) => `<div class="card"><h3>${n}</h3><p>Est. requests / 5h</p><p>Go&nbsp;${g} · Go Plus&nbsp;${p}</p><p>Go: $60; Go Plus: $120</p></div>`)
+    .join('') +
+  '</section>'
+
+test('the dropdown labels each model with the console estimate of requests per 5 hours, Go until a response says Plus', async ($, on) => {
+  const usage = { ...OC_USAGE, opencode: { ...OC_USAGE.opencode, billing_source: 'go-plus' } }
+  world(on, [{ content: 'x', usage }], { consoleHtml: CONSOLE })
+  await start($)
+  const labels = async () => {
+    const ui = await ($.ui as any).mount(bandWith(160))
+    const options = (await ui.find({ type: 'Select' }))?.props.options as any[]
+    await ui.unmount()
+    return Object.fromEntries(options.map(o => [o.value, o.label]))
+  }
+  const before = await labels()
+  expect(before['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~43.3K/5h')
+  expect(before['glm-5.3-flash']).toBe('glm-5.3-flash  ~6.3K/5h')
+  expect(before['kimi-k2.7-code']).toBe('kimi-k2.7-code  $60/mo') // not on the page: its monthly limit instead
+  await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
+  const after = await labels()
+  expect(after['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~86.7K/5h')
+  expect(after['glm-5.3-flash']).toBe('glm-5.3-flash  ~18.9K/5h')
+})
+
+test('the estimates survive a redesigned page: no ids, other markup, K numbers, matched by display name', async ($, on) => {
+  world(on, [{ content: 'x' }], { consoleHtml: REDESIGNED })
+  await start($)
+  const ui = await ($.ui as any).mount(bandWith(160))
+  const options = (await ui.find({ type: 'Select' }))?.props.options as any[]
+  await ui.unmount()
+  const label = Object.fromEntries(options.map(o => [o.value, o.label]))
+  expect(label['deepseek-v4.1-flash']).toBe('deepseek-v4.1-flash  ~43.3K/5h')
+  expect(label['glm-5.3-flash']).toBe('glm-5.3-flash  ~6.3K/5h')
+  expect(label['kimi-k2.7-code']).toBe('kimi-k2.7-code  ~994/5h')
+})
+
+test('a page with too few readable models is not trusted', async ($, on) => {
+  world(on, [{ content: 'x' }], { consoleHtml: `<table>${consoleRow('deepseek-v4.1-flash', '43,300', '86,700')}</table>` })
+  await start($)
+  const ui = await ($.ui as any).mount(bandWith(160))
+  const options = (await ui.find({ type: 'Select' }))?.props.options as any[]
+  await ui.unmount()
+  // not trusted, so each model falls back to its monthly limit from /v1/models
+  expect(Object.fromEntries(options.map(o => [o.value, o.label]))).toEqual({
+    '': '— pick a model —',
+    'deepseek-v4.1-flash': 'deepseek-v4.1-flash  $100/mo',
+    'glm-5.3-flash': 'glm-5.3-flash  $60/mo',
+    'kimi-k2.7-code': 'kimi-k2.7-code  $60/mo',
+  })
+})
