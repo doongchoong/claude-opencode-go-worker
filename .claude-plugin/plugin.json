@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "OpenCode Go as a flat-rate worker for Claude: one-shot jobs, a code explorer and a small coding agent, with plan usage in the status line. / Claude가 OpenCode Go(월정액)에 일을 맡깁니다: 한 번짜리 작업, 코드 탐색, 작은 코딩 에이전트, 상태줄의 사용량 표시.",
   "author": {
     "name": "doongchoong"
@@ -50,7 +50,7 @@
     "language": {
       "type": "string",
       "title": "Language · 언어",
-      "description": "Language of the model bar, status line and commands: auto, en or ko. / 모델 바, 상태줄, 명령의 언어: auto, en, ko.",
+      "description": "Language of the model bar, status line and commands: auto (the Claude app's language, else the system's), en or ko. / 모델 바, 상태줄, 명령의 언어: auto(Claude 앱 언어, 없으면 시스템 언어), en, ko.",
       "options": [
         "auto",
         "en",

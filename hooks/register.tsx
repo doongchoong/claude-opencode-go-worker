@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.7'
+const VERSION = '0.5.8'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -260,7 +260,7 @@ const OPTION_TEXT: Record<Lang, Record<string, { label: string; description: str
       label: 'go_agent (coding agent)',
       description: 'Go edits files, runs the check command Claude gives it, and fixes until it passes, all inside one call. It runs only the commands Claude lists.',
     },
-    language: { label: 'Language', description: 'Language of the plugin settings, model bar, status line and commands: auto (your system language), en or ko.' },
+    language: { label: 'Language', description: "Language of the plugin settings, model bar, status line and commands: auto (the Claude app's language, else your system's), en or ko." },
   },
   ko: {
     api_key: {
@@ -280,7 +280,7 @@ const OPTION_TEXT: Record<Lang, Record<string, { label: string; description: str
       label: 'go_agent (코딩 에이전트)',
       description: 'Go가 파일을 고치고, Claude가 정해 준 확인 명령을 돌리고, 통과할 때까지 다시 고칩니다. 이 모든 게 호출 한 번 안에서 끝납니다. Claude가 적어 준 명령만 실행합니다.',
     },
-    language: { label: '언어', description: '플러그인 설정, 모델 바, 상태줄, 명령의 언어입니다. auto(시스템 언어), en, ko 중에서 고릅니다.' },
+    language: { label: '언어', description: '플러그인 설정, 모델 바, 상태줄, 명령의 언어입니다. auto(Claude 앱 언어, 없으면 시스템 언어), en, ko 중에서 고릅니다.' },
   },
 }
 
@@ -304,19 +304,27 @@ async function detectLang(io: IO, option: unknown): Promise<Lang> {
   }
   const defaults = '/usr/bin/defaults'
   if (await io.exists(defaults)) {
-    let out = ''
-    try {
-      for await (const { stream, text } of io.spawn([defaults, 'read', '-g', 'AppleLanguages'], '')) {
-        if (stream === 'stdout') out += text
+    // A language set for the Claude app alone (System Settings → Language & Region → Applications) wins over
+    // the system's: the desktop app runs Claude Code, and that is the language its window shows
+    for (const args of [['read', CLAUDE_APP_ID, 'AppleLanguages'], ['read', '-g', 'AppleLanguages']]) {
+      let out = ''
+      try {
+        for await (const { stream, text } of io.spawn([defaults, ...args], '')) {
+          if (stream === 'stdout') out += text
+        }
+      } catch {
+        continue
       }
-    } catch {
-      return 'en'
+      // Prints a list such as ( "en-KR", ko ); the first entry is the preferred language
+      const lang = langOfLocale(/\(\s*"?([A-Za-z]+[^",\s)]*)/.exec(out)?.[1])
+      if (lang) return lang
     }
-    const first = /\(\s*"?([A-Za-z]+[^",\s)]*)/.exec(out)?.[1]
-    return langOfLocale(first) ?? 'en'
   }
   return 'en'
 }
+
+// The Claude desktop app, for its own language setting on macOS
+const CLAUDE_APP_ID = 'com.anthropic.claudefordesktop'
 
 // ───────── Settings: API key, home folder, session ─────────
 
@@ -1773,7 +1781,10 @@ export const register: Register = (on, options) => {
   const isOn = (name: string) => (name === 'go_agent' ? agentToolOn : name === 'go_explore' ? exploreToolOn : true)
 
   on('session.start', async ($, e, next) => {
-    const lang = await langOf($, langOption)
+    // Detect afresh: the system or app language may have changed since the language was last stored
+    const key = String(langOption ?? 'auto')
+    const lang = await detectLang(makeIO($, langOption), langOption)
+    await update($, uiLang, () => ({ option: key, lang }))
     try {
       await $.command.register({ name: 'go-usage', description: UI[lang].commandDescription })
     } catch {

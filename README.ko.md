@@ -84,7 +84,7 @@ Go로 이 저장소에서 API 키를 어디서 읽는지 찾아봐
 | `explore_agent` | 켜짐 | `go_explore` 사용 |
 | `worker_agent` | 켜짐 | `go_agent` 사용 |
 | `allow_outside_workdir` | 꺼짐 | `go_chat` 의 파일 권한 확인 건너뛰기 (`go_agent`, `go_explore` 에는 적용 안 됨) |
-| `language` | `auto` | 설정, 모델 바, 상태줄, 명령의 언어 (`auto`, `en`, `ko`) |
+| `language` | `auto` | 설정, 모델 바, 상태줄, 명령의 언어 (`auto`는 Claude 앱 언어, 없으면 시스템 언어를 따름. `en`, `ko`) |
 
 | 명령 | 하는 일 |
 |---|---|

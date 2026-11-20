@@ -26,6 +26,10 @@ type WorldOptions = {
   bashRule?: (command: string) => 'allow' | 'deny' | 'ask'
   // the console Go page's HTML (undefined: the page answers 404)
   consoleHtml?: string
+  // macOS languages: what `defaults read com.anthropic.claudefordesktop AppleLanguages` and
+  // `defaults read -g AppleLanguages` print; when either is set, /usr/bin/defaults exists
+  appLanguages?: string
+  systemLanguages?: string
   // awaited before each command runs (to look at the band mid-run)
   onRun?: () => Promise<void>
 }
@@ -154,6 +158,7 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   }))
   const disk = new Set(['/', '/work', '/work/a.py', '/work/.env', '/tmp', '/usr/bin/curl'])
   if (opts.keyFile !== false) disk.add('/home/u/.config/opencode-go/api_key')
+  if (opts.appLanguages !== undefined || opts.systemLanguages !== undefined) disk.add('/usr/bin/defaults')
   on('session.cwd', () => ({ value: '/work' }))
   const bashChecks: string[] = []
   on('tool.check', (_: unknown, e: any) => {
@@ -226,6 +231,15 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
   })
   // Generation goes through curl: read the body from the config on stdin and answer in SSE, then the status mark
   on('process.spawn', async function* (_: unknown, e: any) {
+    if (e.argv[0] === '/usr/bin/defaults') {
+      const out = e.argv[2] === '-g' ? opts.systemLanguages : opts.appLanguages
+      if (out === undefined) {
+        yield { stream: 'stderr', text: 'Domain does not exist' }
+        return { value: { code: 1, signal: null } }
+      }
+      yield { stream: 'stdout', text: out }
+      return { value: { code: 0, signal: null } }
+    }
     if (e.argv[0] !== '/usr/bin/curl') return { value: { code: 1, signal: null } }
     configs.push(e.input)
     argvs.push(e.argv)
@@ -972,4 +986,17 @@ test('the settings rows follow the language: Korean labels and descriptions unde
   // another plugin's rows are left alone
   const other: any = await ($ as any).config.describe({ key: 'theme', label: 'Theme', description: 'x', isHidden: false, provider: { plugin: 'engine' } })
   expect(other.label).toBe('Theme')
+})
+
+
+test('auto language: the Claude app\'s own language wins over the system\'s', async ($, on) => {
+  world(on, [{ content: 'x' }], { env: { LANG: '' }, appLanguages: '(\n    "en-KR",\n    ko\n)\n', systemLanguages: '(\n    "ko-KR"\n)\n' })
+  await start($)
+  expect(await goUsage($)).toContain('Key OK')
+})
+
+test('auto language: without an app setting, the system language is used', async ($, on) => {
+  world(on, [{ content: 'x' }], { env: { LANG: '' }, systemLanguages: '(\n    "ko-KR"\n)\n' })
+  await start($)
+  expect(await goUsage($)).toContain('키 정상')
 })

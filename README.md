@@ -84,7 +84,7 @@ The `(~43.3K/5h)` in the dropdown is the OpenCode console's estimate of requests
 | `explore_agent` | on | Use `go_explore` |
 | `worker_agent` | on | Use `go_agent` |
 | `allow_outside_workdir` | off | Skip `go_chat`'s file permission checks (never applies to `go_agent` or `go_explore`) |
-| `language` | `auto` | Language of the settings, model bar, status line and commands (`auto`, `en`, `ko`) |
+| `language` | `auto` | Language of the settings, model bar, status line and commands (`auto` follows the Claude app's language, else the system's; `en`; `ko`) |
 
 | Command | |
 |---|---|
