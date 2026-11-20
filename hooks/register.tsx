@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.4'
+const VERSION = '0.5.5'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -238,6 +238,51 @@ Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
     writing: (lines: number) => `작성 중… ${lines}줄`,
   },
 } satisfies Record<Lang, unknown>
+
+// The plugin's settings rows in the /config menu, in the language people read. The manifest holds the
+// English texts; Korean comes from here through config.describe.
+const OPTION_TEXT: Record<Lang, Record<string, { label: string; description: string }>> = {
+  en: {
+    api_key: {
+      label: 'OpenCode Console API key',
+      description: 'A Console key (oc_sk_...) from a workspace subscribed to Go, kept in secure storage. Leave it empty to use ~/.config/opencode-go/api_key. Environment variables are not read.',
+    },
+    default_model: { label: 'Default model', description: 'The model new sessions use. Picking one in the model bar or with /go-model sets it.' },
+    allow_outside_workdir: {
+      label: 'Skip the file permission check',
+      description: "go_chat's files and output_path may only use paths Claude itself could Read / Write without asking, never files a deny rule blocks. Turn on to skip that check.",
+    },
+    explore_agent: {
+      label: 'go_explore (code explorer)',
+      description: 'Go answers questions about the codebase by searching and reading files on its own, and returns the answer with path:line evidence. It changes nothing.',
+    },
+    worker_agent: {
+      label: 'go_agent (coding agent)',
+      description: 'Go edits files, runs the check command Claude gives it, and fixes until it passes, all inside one call. It runs only the commands Claude lists.',
+    },
+    language: { label: 'Language', description: 'Language of the plugin settings, model bar, status line and commands: auto (your system language), en or ko.' },
+  },
+  ko: {
+    api_key: {
+      label: 'OpenCode Console API 키',
+      description: 'Go를 구독한 워크스페이스의 Console 키(oc_sk_...)입니다. OS 보안 저장소에 보관합니다. 비워 두면 ~/.config/opencode-go/api_key 파일을 읽고, 환경 변수는 보지 않습니다.',
+    },
+    default_model: { label: '기본 모델', description: '새 세션이 쓸 모델입니다. 모델 바나 /go-model 로 고르면 바뀝니다.' },
+    allow_outside_workdir: {
+      label: '파일 권한 확인 건너뛰기',
+      description: 'go_chat 의 files 와 output_path 는 Claude가 묻지 않고 읽고 쓸 수 있는 곳만 씁니다(deny 규칙이 걸린 파일은 제외). 켜면 이 확인을 건너뜁니다.',
+    },
+    explore_agent: {
+      label: 'go_explore (코드 탐색)',
+      description: '코드베이스에 대한 질문에 Go가 직접 파일을 찾고 읽어서 path:line 근거와 함께 답합니다. 아무것도 바꾸지 않습니다.',
+    },
+    worker_agent: {
+      label: 'go_agent (코딩 에이전트)',
+      description: 'Go가 파일을 고치고, Claude가 정해 준 확인 명령을 돌리고, 통과할 때까지 다시 고칩니다. 이 모든 게 호출 한 번 안에서 끝납니다. Claude가 적어 준 명령만 실행합니다.',
+    },
+    language: { label: '언어', description: '플러그인 설정, 모델 바, 상태줄, 명령의 언어입니다. auto(시스템 언어), en, ko 중에서 고릅니다.' },
+  },
+}
 
 // 2026-11-19T21:10:37.000Z → 2026-11-19 21:10 UTC (people read it; time zones vary, so keep UTC explicit)
 const localTime = (iso: string) => {
@@ -1721,8 +1766,9 @@ export const register: Register = (on, options) => {
   }
   optionModel = String(options.default_model ?? '').trim()
   const langOption = options.language
-  const agentToolOn = options.worker_agent === true
-  const exploreToolOn = options.explore_agent === true
+  // On unless turned off (the manifest's default is on)
+  const agentToolOn = options.worker_agent !== false
+  const exploreToolOn = options.explore_agent !== false
   // The tools an option turns on, and whether it is on
   const isOn = (name: string) => (name === 'go_agent' ? agentToolOn : name === 'go_explore' ? exploreToolOn : true)
 
@@ -1758,6 +1804,13 @@ export const register: Register = (on, options) => {
     await loadEst(makeIO($, langOption))
     await showStatus($, langOption)
     return next(e)
+  })
+
+  // The settings rows in the people's language
+  on('config.describe', { key: /^opencode-go-worker\./ }, async ($, e, next) => {
+    const r = await next(e)
+    const text = OPTION_TEXT[await langOf($, langOption)][e.key.slice(`${PLUGIN}.`.length)]
+    return text ? { ...r, label: text.label, description: text.description } : r
   })
 
   // Tells Claude when to delegate and when to do it itself

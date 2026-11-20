@@ -667,7 +667,7 @@ test('go_agent: registered only with its option, with a guide for Claude', AGENT
   expect(r.sections.find((x: any) => x.id === 'opencode-go-worker:go_agent')?.text).toContain('Always give check_command')
 })
 
-test('go_agent: off by default', async ($, on) => {
+test('go_agent: on by default, and gone when its option is turned off', { options: { worker_agent: false } }, async ($, on) => {
   world(on, [{ content: 'x' }])
   await start($)
   const r: any = await ($.tool.call as any)({ tool: AGENT, task: 'x', check_command: CHECK, model: 'glm-5.3-flash' })
@@ -782,18 +782,18 @@ test('go_agent: progress shows in the band while it works and clears after', AGE
 
 const EXPLORE = 'mcp__opencode-go-worker__go_explore'
 
-test('go_explore: registered only with its option, with a guide; off by default', EXPLORE_OPTS, async ($, on) => {
+test('go_explore: registered, with a guide for Claude', EXPLORE_OPTS, async ($, on) => {
   on('prompt.compose', () => ({ sections: [] }))
   const w = world(on, [{ content: 'x' }])
   await start($)
   expect(w.registered).toContain('go_explore')
-  expect(w.registered).not.toContain('go_agent')
+  expect(w.registered).toContain('go_agent') // both on by default
   expect(w.agents.length).toBe(0) // no subagent any more
   const r: any = await ($ as any).prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
   expect(r.sections.find((x: any) => x.id === 'opencode-go-worker:go_explore')?.text).toContain('Explore agent')
 })
 
-test('go_explore: off by default', async ($, on) => {
+test('go_explore: gone when its option is turned off', { options: { explore_agent: false } }, async ($, on) => {
   world(on, [{ content: 'x' }])
   await start($)
   const r: any = await ($.tool.call as any)({ tool: EXPLORE, question: 'x', model: 'glm-5.3-flash' })
@@ -959,4 +959,17 @@ test('a page with too few readable models is not trusted', async ($, on) => {
     'glm-5.3-flash': 'glm-5.3-flash ($60/mo)',
     'kimi-k2.7-code': 'kimi-k2.7-code ($60/mo)',
   })
+})
+
+test('the settings rows follow the language: Korean labels and descriptions under ko', { options: { language: 'ko' } }, async ($, on) => {
+  on('config.describe', (_: unknown, e: any) => ({ label: e.label, description: e.description, isHidden: false }))
+  world(on, [{ content: 'x' }])
+  await start($)
+  const row = async (key: string) =>
+    ($ as any).config.describe({ key: `opencode-go-worker.${key}`, label: key, description: 'english', isHidden: false, provider: { plugin: 'opencode-go-worker' } })
+  expect(await row('default_model')).toMatchObject({ label: '기본 모델' })
+  expect((await row('worker_agent')).description).toContain('호출 한 번 안에서')
+  // another plugin's rows are left alone
+  const other: any = await ($ as any).config.describe({ key: 'theme', label: 'Theme', description: 'x', isHidden: false, provider: { plugin: 'engine' } })
+  expect(other.label).toBe('Theme')
 })

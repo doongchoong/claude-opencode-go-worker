@@ -1,7 +1,7 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.5.4",
-  "description": "Let Claude hand off well-specified, verifiable work to OpenCode Go models as a flat-rate worker, with allowance usage in the status line.",
+  "version": "0.5.5",
+  "description": "OpenCode Go as a flat-rate worker for Claude: one-shot jobs, a code explorer and a small coding agent, with plan usage in the status line.",
   "author": {
     "name": "doongchoong"
   },
@@ -19,38 +19,38 @@
     "api_key": {
       "type": "string",
       "title": "OpenCode Console API key",
-      "description": "A Console key (oc_sk_...) from a workspace subscribed to Go. Stored in secure storage. Leave empty to use ~/.config/opencode-go/api_key (readable only by you). Environment variables are not read.",
+      "description": "A Console key (oc_sk_...) from a workspace subscribed to Go, kept in secure storage. Leave it empty to use ~/.config/opencode-go/api_key. Environment variables are not read.",
       "sensitive": true,
       "required": false
     },
     "default_model": {
       "type": "string",
       "title": "Default model",
-      "description": "Model id used when Claude leaves model empty. Run go_models to see what your plan offers.",
+      "description": "The model new sessions use. Picking one in the model bar or with /go-model sets it.",
       "required": false
     },
     "allow_outside_workdir": {
       "type": "boolean",
       "title": "Skip the file permission check",
-      "description": "Off by default: `files` and `output_path` may only use paths Claude Code lets Claude Read / Write (working folder, scratchpad, /add-dir folders), and never files a deny rule blocks.",
+      "description": "go_chat's files and output_path may only use paths Claude itself could Read / Write without asking, never files a deny rule blocks. Turn on to skip that check.",
       "default": false
     },
     "explore_agent": {
       "type": "boolean",
-      "title": "go_explore search tool (experimental)",
-      "description": "Registers go_explore: Go answers a question about the codebase by finding, searching and reading files on its own (only where Claude may read without asking), and returns just the answer with path:line evidence. It changes nothing and runs no commands. Uses the model picked with /go-model.",
-      "default": false
+      "title": "go_explore (code explorer)",
+      "description": "Go answers questions about the codebase by searching and reading files on its own, and returns the answer with path:line evidence. It changes nothing.",
+      "default": true
     },
     "worker_agent": {
       "type": "boolean",
-      "title": "go_agent coding tool (experimental)",
-      "description": "Registers go_agent: a small OpenCode Go coding agent the plugin runs inside one tool call. It reads, edits and writes files where Claude may without asking, and runs only the exact commands Claude lists in the call (a check plus up to 4 more), without asking you; your deny rules still win. Uses the model picked with /go-model.",
-      "default": false
+      "title": "go_agent (coding agent)",
+      "description": "Go edits files, runs the check command Claude gives it, and fixes until it passes, all inside one call. It runs only the commands Claude lists.",
+      "default": true
     },
     "language": {
       "type": "string",
       "title": "Language",
-      "description": "Language of the status line and /go-usage: auto (your system language, English if it can't be told), en or ko. Prompts and tool text the model reads are always English.",
+      "description": "Language of the plugin settings, model bar, status line and commands: auto (your system language), en or ko.",
       "options": [
         "auto",
         "en",

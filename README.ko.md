@@ -2,130 +2,150 @@
 
 [English](README.md) · **한국어**
 
-Claude에게 월정액 워커 **[OpenCode Go](https://opencode.ai/docs/go)** 를 붙여 주는 Claude Code 플러그인이에요.
+Claude Code에 [OpenCode Go](https://opencode.ai/docs/go)를 일꾼으로 붙이는 플러그인입니다.
 
-설계, 원인 분석, 검토 같은 판단은 계속 Claude가 맡아요. 길지만 명세가 분명한 작업(테스트 대량 작성, 보일러플레이트, 데이터 변환, 정해진 형식의 코드)은 OpenCode Go 모델에 넘겨요. Go는 월정액이라 한도 안에서는 호출해도 추가 비용이 없어요. 그래서 Claude는 이런 작업을 먼저 Go에 맡기고, 플랜의 5시간 창과 주간 창을 지켜봐요. 결과는 파일에 바로 쓸 수 있어서 Claude의 컨텍스트를 거의 차지하지 않아요.
+생각은 Claude가 하고, 손이 많이 가는 일은 Go가 합니다. Go는 월정액이라 한도 안에서는 몇 번을 불러도 추가 비용이 없습니다. 그래서 테스트 수십 개 쓰기, 정해진 형식의 코드 찍어내기, 데이터 변환처럼 길지만 뻔한 일은 Go에 넘기고, Claude는 지시와 검토만 합니다.
 
-**따로 설치할 것이 없어요.** 플러그인이 Claude Code 안에서 돌아가요. Python, Node, 별도 서버, OpenCode CLI 모두 필요 없어요.
+Python, Node, 별도 서버, OpenCode CLI 모두 필요 없습니다. Claude Code 안에서 그대로 돌아갑니다.
 
+```mermaid
+flowchart LR
+    U([나]) --> C[Claude<br/>지시 · 검토]
+    C -- go_chat / go_agent / go_explore --> P[플러그인]
+    P <--> G[(OpenCode Go)]
+    P -- 파일 · 짧은 보고서 --> C
 ```
-나 ──▶ Claude (계획, 검토) ──▶ go_chat ──▶ OpenCode Go API
-                ▲                  │
-                └── 디스크의 파일 ◀──┘
+
+## 화면
+
+![Claude Code 데스크톱 앱에서 본 모델 바와 상태줄](screenshot.png)
+
+- **프롬프트 위 한 줄**: 지금 쓰는 모델과 이 세션의 사용량입니다. 드롭다운으로 모델을 바로 바꿀 수 있고, 각 모델 옆에는 5시간 동안 보낼 수 있는 대략의 요청 수가 붙습니다. `5h` 숫자는 80%를 넘으면 노란색, 한도에 닿으면 빨간색이 됩니다. 창이 좁으면 덜 중요한 숫자부터 빠집니다.
+- **아래 상태줄**: 플랜의 5시간 창을 얼마나 썼는지만 보여 줍니다. 플러그인이 켜져 있다는 표시도 겸합니다.
+- 에이전트가 일하는 동안에는 사용량 자리에 `go_agent 3단계 · edit_file duration.py` 같은 진행 상황이 뜹니다.
+
+## 도구
+
+| 도구 | 언제 쓰나 | 돌려주는 것 |
+|---|---|---|
+| `go_chat` | 길고 명세가 분명한 한 번짜리 작업 | 답 또는 저장한 파일 경로 |
+| `go_models` | 쓸 모델이 정해지지 않았을 때 | 모델별 한도, effort 값, 데이터 보관 여부 |
+| `go_explore` | "이게 어디 정의돼 있지?" 같은 넓은 코드 탐색 | 답과 `path:line` 근거 |
+| `go_agent` | 테스트로 확인할 수 있는 작은 코딩 작업 | 바뀐 파일, 확인 결과, 요약 |
+
+### go_agent는 이렇게 일합니다
+
+Claude는 한 번 부르고 보고서 한 장을 받습니다. 고치고, 테스트하고, 다시 고치는 반복은 전부 플러그인 안에서 Go가 혼자 합니다. 그 사이에 Claude 토큰은 쓰이지 않습니다.
+
+```mermaid
+sequenceDiagram
+    participant C as Claude
+    participant P as 플러그인
+    participant G as Go 모델
+    C->>P: go_agent(작업, check_command)
+    loop 통과하거나 포기할 때까지
+        P->>G: 지금까지의 대화
+        G-->>P: 파일 읽기 · 고치기 · 명령 실행 요청
+        P->>P: 권한 확인 후 실행
+    end
+    P->>P: check_command 한 번 더 실행
+    P-->>C: 보고서 (바뀐 파일, 통과/실패)
 ```
 
-## 들어 있는 것
-
-| 구성 | 하는 일 |
-| --- | --- |
-| `go_chat` | 작업 하나를 맡겨요. `files`는 플러그인이 직접 읽어 프롬프트 앞에 붙이므로 Claude가 파일 내용을 인자로 복사하지 않아요. `output_path`를 주면 답을 그 파일에 바로 쓰고 경로와 줄 수만 돌려줘요. 결과 끝에는 사용량 줄과 한도 줄(5시간·주간·월간 창)이 붙어요. 서로 독립된 작업이 여러 개면 Claude가 병렬로 불러요. |
-| `go_models` | Go 모델 목록이에요. 컨텍스트·출력 한도, 허용되는 `reasoning_effort` 값, 플랜별 월간 사용량, 플래그(추천 모델, 피크 시간 배수와 지금 적용 중인지, 제공자가 프롬프트를 보관하거나 학습에 쓸 수 있는지)를 보여 줘요. 무료 모델은 OpenCode 전용이라 뺐어요. |
-| 상태줄 | `opencode-go-worker 5h 4%`. 플러그인이 로드됐다는 것과 플랜의 5시간 창을 얼마나 채웠는지만 보여 줘요(세션 시작 때와 호출할 때마다 확인하고, 읽지 못하면 `5h —`). 답을 쓰는 동안에는 `작성 중… 120줄`이 떠요. |
-| `go_explore` (실험, 기본 꺼짐) | 코드베이스에 대한 질문에 Go가 혼자 탐색해서 답해요. 무엇이 어디 정의됐는지, 어떤 파일이 기능에 관여하는지, 흐름이 어떻게 되는지처럼 Claude Code의 Explore 에이전트에게 맡길 만한 탐색을 월정액 플랜으로 해요. 파일을 찾고 내용을 검색하고 읽은 뒤(Claude가 묻지 않고 읽을 수 있는 곳만), path:line 근거와 함께 답만 돌려줘요. 읽은 파일 내용은 Claude 컨텍스트에 들어오지 않아요. 아무것도 바꿀 수 없고 명령도 실행하지 않아요. `explore_agent` 옵션으로 켜요. |
-| `go_agent` (실험, 기본 꺼짐) | 플러그인이 도구 호출 한 번 안에서 돌리는 OpenCode Go 코딩 에이전트예요. 파일을 찾아 읽고, 고치고, 확인 명령을 돌리고, 실패하면 고쳐서 다시 돌리기를 통과하거나 포기할 때까지 반복한 뒤 짧은 보고서(요약, 바뀐 파일, 확인 결과) 하나를 돌려줘요. Claude는 작업 지시를 쓰고 보고서만 읽으니, 반복하는 동안 Claude 토큰이 들지 않아요. 실행할 수 있는 명령은 Claude가 호출할 때 적은 것(`check_command`와 최대 4개)뿐이고, 번호로만 고를 수 있어요. 자체 셸은 없어요. 그 명령들은 사용자에게 묻지 않고 실행돼요. 명령이 적힌 Claude의 호출을 auto 모드 분류기가 이미 검토했기 때문이에요. 사용자의 deny 규칙은 그대로 우선해요. 파일은 Claude가 묻지 않고 읽고 쓸 수 있는 곳에서만 다뤄요. `worker_agent` 옵션으로 켜요. |
-| 모델 바 | 프롬프트 바로 위 한 줄이에요(터미널, 데스크톱 앱, VS Code): `Go 모델: [glm-5.3 ▾]  3회 · 12.4Ktok · 캐시 62% · $0.0012 · 5h 4% · 주 1%`. 드롭다운의 각 모델 옆에는 콘솔이 추정한 내 플랜의 5시간당 요청 수(`deepseek-v4.1-flash (~43.3K/5h)`)가 표시돼요. 응답에 Go Plus라고 나오기 전까지는 Go 기준이고, 플러그인이 로드될 때 콘솔 Go 페이지에서 읽어 와요. 이 숫자를 주는 API가 없어서, 파서는 페이지 모양이 아니라 문구("Go: 43,300; Go Plus: 86,700")와 모델 id 또는 이름에만 기대요. 페이지를 못 읽으면 마지막으로 읽은 값을 최대 2주까지 보여 줘요. 예상치가 없는 모델은 API에서 오는 월간 한도(`deepseek-v4.1-flash ($100/mo)`)를 대신 보여 줘요. 정보 표시일 뿐이에요. 드롭다운에서 고르면 `go_chat`이 바로 그 모델을 쓰고, `default_model`에도 저장돼요. 옆에는 이 세션의 호출 수, 토큰, 프롬프트 캐시 적중률, 쓴 한도와 플랜의 5시간·주간 창이 나와요. 5시간 창은 80%를 넘으면 노란색, 한도에 닿으면 빨간색이에요. 창이 좁으면 덜 중요한 것부터 빠지고 5시간 창은 끝까지 남아요. 설문이 그 자리를 쓰는 동안에는 비켜 줘요. |
-| `/go-model` | Claude가 `model`을 비웠을 때 `go_chat`이 쓸 모델을 바꿔요. Claude의 `/model`과 같은 역할이에요. `/go-model glm-5.3`처럼 바로 정할 수도 있고, `/go-model`만 입력하면 여유가 큰 추천 모델을 대화상자로 보여 줘요(id를 직접 입력해도 돼요). 이 세션에 바로 적용되고, 새 세션을 위해 `default_model` 옵션에도 저장돼요. 이미 열려 있는 다른 세션은 자기 모델을 유지해요(각 세션은 다른 모델을 고르기 전까지 시작할 때의 모델을 써요). |
-| `/go-usage` | 이 세션의 자세한 사용량(캐시된·캐시 안 된 입력, 출력, 추론, 쓴 월 한도)과 플랜 창별 리셋 시각이에요. 첫 호출 전에는 키가 맞는지 확인해 줘요(무료). |
-| Claude용 안내 | 언제 맡기고 언제 직접 할지, 언제 Go를 그만 쓸지(5시간 창 80% 초과, 한도 에러), Go의 프롬프트 캐시를 살리는 법을 Claude의 시스템 프롬프트에 넣어요. |
-
-워커가 파일을 쓸 때 중요한 안전장치예요.
-
-- **긴 출력이 몰래 잘리지 않아요.** `output_path` 호출의 `max_tokens` 기본값은 모델 자체의 출력 한도예요. 그래도 잘리거나 스트림이 끊기면 `<output_path>.partial`에 저장하고 **원래 파일은 건드리지 않아요.** 결과에는 `[truncated]` 또는 `[interrupted]` 줄이 붙어요.
-- **빈 답으로 파일을 덮어쓰지 않아요.**
-- `reasoning_effort`는 보내기 전에 그 모델이 허용하는 값인지 확인해요. 비워 두면 모델 기본값을 써요.
-- **플랜 밖 과금을 알려요.** 요청이 Go 한도가 아니라 잔액(Extra Usage)에서 빠져나가면 결과에 표시하고, Claude가 더 부르기 전에 확인하게 해요.
-- **피크 시간을 알려요.** 일부 모델은 평일 피크 시간(UTC)에 한도를 몇 배로 써요. 해당되면 결과에 적어요.
-- **파일 접근은 Claude Code 권한을 그대로 따라요.** `files`를 읽거나 `output_path`에 쓰기 전에, Claude 자신이 그 경로를 Read·Write할 수 있는지 Claude Code에 물어봐요. 작업 폴더, 세션 스크래치패드, `/add-dir`로 추가한 폴더처럼 Claude가 쓸 수 있는 곳은 다 돼요. deny 규칙으로 막은 파일(예: `Read(.env)`)은 절대 보내지 않아요. 링크는 링크 자신과 가리키는 파일을 둘 다 확인해요. Claude Code가 물어볼 경로는 작업 폴더 안일 때만 허용해요. 플러그인 옵션 `allow_outside_workdir`를 켜면 이 확인을 건너뛰어요.
-
-## 보안 메모
-
-- 플러그인 옵션으로 넣은 API 키는 OS 보안 저장소에 들어가요. `curl`에는 명령줄이 아니라 표준 입력으로 넘기므로 프로세스 목록에 보이지 않아요.
-- 생성 요청은 `PATH`에서 먼저 잡히는 `curl`이 아니라 시스템 `curl`을 절대 경로(`/usr/bin/curl`, Windows는 `%SystemRoot%\System32\curl.exe`)로 불러요. Claude Code 내장 fetch의 30초 제한보다 오래 걸릴 수 있어 스트리밍으로 받아요. `curl`은 별도 프로세스라 Claude Code 자체 네트워크 정책을 거치지 않아요.
-- 프롬프트와 `files`에 넣은 내용은 OpenCode를 거쳐 모델 제공자에게 가요. 일부 제공자는 프롬프트를 보관하거나 학습에 쓸 수 있고, `go_models`가 그런 모델을 표시해요(`trains-on-data`, `no-zdr`). 비밀이나 공유하면 안 되는 데이터는 넣지 마세요.
-- **자료와 지시를 분리해요.** 모델이 읽는 파일은 플러그인이 로드될 때 만든 무작위 id로 `<data id="…">` 블록에 감싸고, 그 안의 내용은 지시가 아니라고 모델에 알려요. 파일은 id를 미리 알 수 없어서 블록 끝을 흉내 낼 수 없어요.
-- 요청에는 플러그인 자체 `User-Agent`(`opencode-go-worker/<버전>`)와 Claude Code 세션 ID에서 만든 `x-opencode-session` 헤더가 붙어요. Go가 요구하는 헤더이고 프롬프트 캐시도 이 기준이에요.
-
-### go_explore, go_agent, 그리고 auto 모드의 안전 검토
-
-둘 다 서브에이전트가 아니라 Claude가 부르는 도구예요. 플러그인이 그 호출 안에서 Go의 반복을 돌려요. auto 모드에서는 분류기가 Claude의 호출(질문, 또는 작업과 거기 적힌 명령)을 검토하고, 에이전트는 그 범위를 벗어날 수 없어요. go_explore는 찾고 읽기만 하고, go_agent는 Claude가 묻지 않고 쓸 수 있는 곳만 고치고 적힌 명령만 실행해요. (이전 버전은 explore를 `turn.step` 훅으로 답하는 서브에이전트로 돌렸어요. 그 단계들은 Anthropic에 가지 않아서, auto 모드가 결과를 검토하지 못했고 판정이 없다며 명령도 거절했어요. 허용 규칙이나 에이전트 권한 모드로도 안 됐어요. 그래서 둘 다 도구가 됐어요.)
-
-go_agent의 명령은 Claude Code Bash 샌드박스 밖에서 명령마다 5분 제한으로 돌아요. 확인 명령은 에이전트가 고친 코드를 실행하므로, Claude는 결과를 믿기 전에 diff를 검토해요.
-
-## 필요한 것
-
-- [Claude Code](https://claude.com/claude-code): 터미널, 데스크톱 앱의 Code 탭, IDE 확장 중 하나
-- Go를 구독한 워크스페이스의 [OpenCode Console](https://opencode.ai) API 키(`oc_sk_…`)
-
-Claude Code 플러그인 런타임을 쓰기 때문에 Claude 데스크톱 앱의 채팅 탭이나 claude.ai에서는 돌아가지 않아요.
+Go가 실행할 수 있는 명령은 Claude가 호출할 때 적어 준 것(최대 5개)뿐입니다. 번호로만 고를 수 있고 내용은 바꿀 수 없습니다. 파일은 Claude가 묻지 않고 읽고 쓸 수 있는 곳만 다룹니다.
 
 ## 설치
 
-Claude Code 터미널 세션 프롬프트에서:
+Claude Code 터미널에서:
 
 ```
 /plugin install opencode-go-worker --marketplace doongchoong/claude-opencode-go-worker
 ```
 
-마켓플레이스를 추가할지 물으면 `y`, 그다음 범위를 고르세요(user 범위 = 모든 프로젝트). 플러그인이 **OpenCode Console API 키**를 물어보고 보안 저장소에 보관해요.
+데스크톱 앱에서는 프롬프트 옆 **+** → **Plugins** → **Add marketplace** 에 `doongchoong/claude-opencode-go-worker` 를 넣고 **Add plugin** 을 누릅니다.
 
-셸에서:
+설치할 때 OpenCode Console API 키(`oc_sk_…`)를 물어봅니다. Go를 구독한 워크스페이스의 키여야 합니다. 키는 OS 보안 저장소에 들어갑니다. 설정을 비워 두면 `~/.config/opencode-go/api_key` 파일을 읽습니다. 환경 변수는 보지 않습니다.
 
-```bash
-claude plugin install opencode-go-worker --marketplace doongchoong/claude-opencode-go-worker
-```
-
-`/plugin`이 동작하지 않는 데스크톱 앱에서는 프롬프트 옆 **+** → **Plugins** → **Add marketplace**에 `doongchoong/claude-opencode-go-worker` → **Add plugin** 순서로 하면 돼요.
-
-플러그인 옵션이 비어 있으면 `~/.config/opencode-go/api_key`(Windows는 `%USERPROFILE%\.config\opencode-go\api_key`)에서 키를 읽어요. 본인만 읽을 수 있게 해 두세요(macOS/Linux는 `chmod 600`). 환경 변수에서는 키를 읽지 않아요.
+> Claude 데스크톱 앱의 채팅 탭이나 claude.ai에서는 동작하지 않습니다. Claude Code(터미널, 데스크톱 앱의 Code 탭, IDE 확장)에서만 됩니다.
 
 ## 쓰는 법
 
-프롬프트 위 드롭다운이나 `/go-model`(또는 `/plugin`의 `default_model` 옵션)로 **기본 모델**을 정해 두세요. 모델 라인업이 자주 바뀌어서 플러그인이 대신 고르지 않아요. 정하지 않으면 Claude가 `go_models`를 보고 작업마다 골라요.
+먼저 모델을 하나 고릅니다. 프롬프트 위 드롭다운이나 `/go-model` 로 고르면 됩니다. 라인업이 자주 바뀌어서 플러그인이 대신 정해 두지 않습니다.
 
-그다음은 Claude에게 말하면 돼요. 직접 쓰는 것보다 맡기는 게 나을 때는 Claude가 알아서 맡기고, 명시적으로 시킬 수도 있어요.
+그다음은 평소처럼 Claude에게 말하면 됩니다. 맡길 만한 일은 Claude가 알아서 Go에 넘기고, 직접 시켜도 됩니다.
 
-- "Go한테 `parser.py` 단위 테스트를 `tests/test_parser.py`에 쓰게 하고 돌려 봐."
-- "이 변환 작업 12개 OpenCode Go에 병렬로 맡겨."
-- "이건 glm-5.3, effort low로 Go에 맡겨."
-- "이번 건 Go 쓰지 마."
+```
+parser.py 단위 테스트를 Go한테 tests/test_parser.py에 쓰게 하고 돌려 봐
+이 변환 작업 12개 Go에 병렬로 맡겨
+실패하는 테스트 고치는 거 go_agent로 해. 확인은 pytest tests/parser
+Go로 이 저장소에서 API 키를 어디서 읽는지 찾아봐
+이번 건 pro로 해 줘
+```
 
-돌아온 결과는 Claude가 검토해요(테스트 실행, 파일 일부 읽기). 두 번 다시 시켜도 안 되면 Claude가 직접 써요.
+결과는 Claude가 확인합니다. 테스트를 돌려 보고, 필요한 부분만 읽고, 두 번 시켜도 안 되면 직접 씁니다.
 
-[DeepSeek 워커](https://github.com/doongchoong/claude-deepseek-worker)도 같이 깔려 있으면, 플랜에 여유가 있는 동안 한 번에 끝나는 작업은 Go를 먼저 써요. 5시간 창이 80%를 넘거나 Go가 한도 에러를 내면 DeepSeek에 맡기거나 직접 해요.
+### 모델 고르기
+
+- 고른 모델은 그 세션에만 적용됩니다. 다른 세션은 각자 시작할 때의 모델을 계속 씁니다.
+- 고르면 새 세션의 기본값(`default_model`)도 같이 바뀝니다. 이때 플러그인이 한 번 다시 로드되면서 "options changed — reloaded" 줄이 남는데, 정상입니다.
+- "pro로 해 줘"처럼 말하면 그 호출에만 다른 모델이 들어갑니다. 드롭다운은 그대로입니다.
+
+드롭다운의 `(~43.3K/5h)` 는 OpenCode 콘솔이 추정한 5시간당 요청 수입니다. 이 숫자를 주는 API가 없어서 콘솔의 공개 페이지에서 읽어 옵니다. 페이지를 못 읽으면 마지막으로 읽은 값을 2주까지 쓰고, 그것도 없으면 API에 있는 월간 한도(`($100/mo)`)를 대신 보여 줍니다. Go Plus인지는 첫 응답을 보고 압니다.
 
 ## 설정
 
-| 플러그인 옵션 | 기본값 | |
-| --- | --- | --- |
-| `api_key` | — | Console 키, 보안 저장소에 보관 |
-| `default_model` | — | Claude가 `model`을 비웠을 때 쓸 모델 id, `/go-model`이 바꿔요 |
-| `allow_outside_workdir` | 꺼짐 | 파일 권한 확인을 건너뜀 |
-| `explore_agent` | 꺼짐 | `go_explore` 도구 등록 |
-| `worker_agent` | 꺼짐 | `go_agent` 도구 등록 |
-| `language` | `auto` | 상태줄과 `/go-usage` 언어: `auto`, `en`, `ko` |
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `api_key` | — | Console 키 |
+| `default_model` | — | 새 세션이 쓸 모델. 드롭다운이나 `/go-model` 로 고르면 바뀝니다 |
+| `explore_agent` | 켜짐 | `go_explore` 사용 |
+| `worker_agent` | 켜짐 | `go_agent` 사용 |
+| `allow_outside_workdir` | 꺼짐 | `go_chat` 의 파일 권한 확인 건너뛰기 (`go_agent`, `go_explore` 에는 적용 안 됨) |
+| `language` | `auto` | 설정, 모델 바, 상태줄, 명령의 언어 (`auto`, `en`, `ko`) |
 
-**언어:** `auto`는 `LC_ALL` / `LC_MESSAGES` / `LANG`, 그다음 macOS 시스템 언어를 따르고, 알 수 없으면 영어예요. 모델이 읽는 글은 모두 영어이고, 워커는 요청한 언어로 답하게 돼 있어요.
+| 명령 | 하는 일 |
+|---|---|
+| `/go-model [id]` | 이 세션의 모델 바꾸기. id 없이 치면 고르는 창이 뜹니다 |
+| `/go-usage` | 이 세션 사용량과 5시간·주간·월간 한도, 리셋 시각 |
 
-**잠시 끄기:** `/plugin disable opencode-go-worker` 하거나 `~/.config/opencode-go/disabled` 파일을 만드세요. 새 세션은 도구를 등록하지 않고, 이미 열린 세션은 "disabled"라고 답해요. 파일을 지우면 다시 켜져요.
+잠시 끄려면 `/plugin disable opencode-go-worker` 를 쓰거나 `~/.config/opencode-go/disabled` 파일을 만듭니다. 파일을 지우면 다시 켜집니다.
 
-## 한도와 비용
+## 안전장치
 
-OpenCode Go는 월정액이고, 월 한도 위에 5시간 창과 주간 창이 따로 있어요. 넘으면 요청이 거절(HTTP 429)되거나, Extra Usage를 켜 두었다면 잔액에서 빠져나가요. 여기서 보여 주는 플랜 창은 **문서화되지 않은** 사용량 엔드포인트에서 가져와요. 그 엔드포인트가 응답하지 않으면 상태줄에서 그 부분만 빠지고 결과에는 `[limits: unknown]`이라고 나와요.
+**파일을 망치지 않게**
+- 긴 출력이 잘리거나 연결이 끊기면 원래 파일은 그대로 두고 `<파일>.partial` 에 따로 저장합니다.
+- 빈 답으로는 파일을 덮어쓰지 않습니다.
+- 파일 접근은 Claude Code 권한을 그대로 따릅니다. `Read(.env)` 같은 deny 규칙이 걸린 파일은 절대 보내지 않습니다.
 
-창 사용률은 정수 퍼센트라 작은 호출 몇 번으로는 안 움직일 수 있어요. `/go-usage`는 각 응답에서 받은 값을 더해 이 세션이 쓴 한도도 따로 보여 줘요.
+**돈이 새지 않게**
+- 요청이 Go 한도가 아니라 잔액에서 빠져나가면 결과에 표시하고, Claude가 더 부르기 전에 묻게 합니다.
+- 평일 피크 시간에 한도를 몇 배로 쓰는 모델은, 그 시간에 부르면 결과에 그렇게 적힙니다.
+- 5시간 창이 80%를 넘거나 한도에 걸리면 Claude는 리셋까지 Go를 쓰지 않습니다.
+
+**정보가 새지 않게**
+- 키는 `curl` 에 표준 입력으로 넘겨서 프로세스 목록에 나타나지 않습니다.
+- 파일 내용은 무작위 id로 감싸서 Go에 보내고, 그 안의 문장은 지시로 따르지 말라고 알려 둡니다.
+- 프롬프트와 파일은 OpenCode를 거쳐 모델 제공자에게 갑니다. 프롬프트를 보관하거나 학습에 쓰는 모델은 `go_models` 에 `trains-on-data`, `no-zdr` 로 표시되니, 비밀이 담긴 코드에는 피하세요.
+
+## 알아 둘 점
+
+- 남은 한도(5시간·주간·월간 %)는 문서에 없는 엔드포인트(`/zen/go/v1/usage`)에서 가져옵니다. 응답이 없으면 상태줄에 `5h —` 로 나옵니다.
+- 사용률은 1% 단위라 작은 호출 몇 번으로는 숫자가 움직이지 않을 수 있습니다. 정확한 사용량은 `/go-usage` 에서 봅니다.
+- `go_agent` 의 명령은 Claude Code Bash 샌드박스 밖에서, 명령마다 5분 제한으로 돕니다. 테스트는 Go가 고친 코드를 실행하므로 결과를 받으면 diff를 한 번 봐 주세요.
+- 예전 버전은 explore를 서브에이전트로 돌렸는데, auto 모드에서 안전 검토를 받지 못하고 명령도 막혀서 지금처럼 도구로 바꿨습니다. 자세한 내용은 [spike/FINDINGS.md](spike/FINDINGS.md)에 있습니다.
 
 ## 구조
 
 ```
-.claude-plugin/plugin.json       플러그인 매니페스트와 옵션
-.claude-plugin/marketplace.json  /plugin install로 이 저장소를 설치하게 해 줌
-hooks/register.tsx               도구, Claude용 안내, 상태줄, 모델 드롭다운, /go-model, /go-usage
-hooks/go.test.ts                 API·파일·환경을 흉내 낸 테스트 (claude plugin test .)
-types/index.d.ts                 플러그인 상태의 모양(사용량, 한도, 언어)
-spike/                           API 스파이크(spike.sh)와 결과(FINDINGS.md)
+.claude-plugin/plugin.json       매니페스트와 옵션
+.claude-plugin/marketplace.json  /plugin install 용
+hooks/register.tsx               도구, Claude용 안내, 상태줄, 모델 바, 명령
+hooks/go.test.ts                 테스트 (claude plugin test .)
+types/index.d.ts                 플러그인 상태의 모양
+spike/                           API 조사 스크립트와 결과
 ```
 
-**변경을 배포할 때:** 푸시할 때마다 `.claude-plugin/plugin.json`의 `version`을 올리세요. 설치본은 버전별로 캐시돼요.
+배포할 때는 `.claude-plugin/plugin.json` 의 `version` 을 올려야 합니다. 설치본이 버전별로 캐시되기 때문입니다.
 
 ## 라이선스
 
