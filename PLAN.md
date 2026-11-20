@@ -56,8 +56,7 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 ## 3. 설계 메모
 
 - **비용 모델이 DeepSeek과 다르다.** 월정액이라 한도 안에서는 한계비용 ≈ 0.
-  GUIDE: "출력이 길고 명세가 분명하며 검증 가능한 작업은 Go에 먼저 맡긴다. 5시간 창이 80%를 넘으면 DeepSeek 또는 직접 작성."
-  deepseek-worker와 같이 설치됐을 때 두 GUIDE가 충돌하지 않게 우선순위를 한 줄로 둔다.
+  GUIDE: "출력이 길고 명세가 분명하며 검증 가능한 작업은 Go에 먼저 맡긴다."
 - **기본 모델은 코드에 박지 않는다.** 라인업이 자주 바뀐다 → userConfig `default_model`, 비면 `go_models`로 고르라고 안내.
 - **429**: 에러에 리셋 시각을 넣어 Claude가 다른 경로로 갈 수 있게.
 - **스트리밍**: `$.http.fetch`는 30초 제한 → curl 스트리밍(deepseek-worker의 `streamChat`) 재사용.
@@ -78,7 +77,6 @@ Haiku 대신 Go 모델(GLM 등)로 넓은 탐색을 시키는 서브에이전트
 6. ~~**v0.3 worker 서브에이전트**~~ (폐기): turn.step 서브에이전트는 auto 모드에서 명령을 못 돌림(분류기 판정 없음; 허용 규칙·acceptEdits 모두 실패, 실측).
 6-2. **v0.5 go_explore 도구** (구현): explore도 서브에이전트(turn.step) 대신 go_agent와 같은 루프를 쓰는 읽기 전용 도구로. 분류기 경고가 사라지고 turn.step 코드 제거.
 6-1. **v0.4 go_agent 도구** (구현): deepseek_agent처럼 플러그인이 루프를 직접 돌림. 파일은 Claude Code 권한 그대로, 명령은 Claude가 호출에 적은 목록만 번호로 실행(묻지 않음, deny 규칙 우선). 반복 동안 Claude 토큰 0.
-7. (나중) deepseek-worker 정리: batch/agent 정리, explore 서브에이전트를 DeepSeek에도 적용 검토.
 
 ## 5. 리스크
 - 비공식 usage 엔드포인트 변경 가능성

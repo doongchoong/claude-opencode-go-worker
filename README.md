@@ -103,7 +103,6 @@ To turn it off for a while, use `/plugin disable opencode-go-worker` or create `
 **Your money**
 - A request billed to your balance instead of the Go allowance is flagged, and Claude asks you before making more.
 - Models that use a multiple of the allowance at weekday peak hours say so when called then.
-- Past 80% of the 5-hour window, or on a limit error, Claude stops using Go until the reset.
 
 **Your data**
 - The key goes to `curl` on standard input, so it never shows in process lists.

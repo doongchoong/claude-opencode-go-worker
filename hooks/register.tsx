@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.5.8'
+const VERSION = '0.5.9'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -97,7 +97,7 @@ const FENCE_RE = /^\s*```[^\n]*\n([\s\S]*?)\n```\s*$/
 
 const EXPLORE_GUIDE = `# OpenCode Go explore (go_explore)
 For a broad read-only search where only the conclusion matters — the kind you would give the Explore agent — use go_explore: it runs on the flat-rate OpenCode Go plan instead of Claude.
-For a narrow lookup (one file, one symbol), search yourself. Its answer comes from a non-Claude model: open the path:line it cites before acting on a fact.`
+For a narrow lookup (one file, one symbol), search yourself. go_explore's answer comes from a non-Claude model: open the path:line it cites before acting on a fact.`
 
 const AGENT_GUIDE = `# OpenCode Go agent (go_agent)
 For a contained coding task a command can verify — make failing tests pass, a well-specified change across a few files — hand it to go_agent: Go edits, runs the check, fixes and runs it again on its own, inside one call, on the flat-rate plan. You write the task and read one report.
@@ -114,7 +114,7 @@ OpenCode Go is a flat-rate plan: within its limits a call costs nothing extra. S
 - The output is long and well specified (many tests, boilerplate, data conversion, code in a fixed format).
 - Everything it needs fits in the prompt and files.
 - It can be verified by tests or by running it.
-Several independent jobs: call go_chat for each, in parallel.
+For several independent jobs, call go_chat once per job, in parallel.
 
 Write it yourself when:
 - It is a small change of a few lines.
@@ -122,11 +122,8 @@ Write it yourself when:
 - Judgment is the core of it, such as design or root-cause analysis.
 - Mistakes are expensive: security, data deletion, money calculations.
 
-Every go_chat result ends with a [limits: …] line. When the 5-hour window is above 80%, or a call fails on a limit, don't use Go until the reset time it names: use another worker (such as DeepSeek) or write it yourself.
-If a DeepSeek worker is also available, go_chat comes first for one-shot work while Go has room; DeepSeek's other tools are unaffected.
-
-When delegating, pass reference files with files, save code results with output_path, and review by running tests or reading parts.
-After two failed re-instructions, write it yourself.
+When delegating, pass reference files in files and save code to output_path. Review the result by running tests or reading the parts that matter.
+If it still fails after two corrected retries, write it yourself.
 Leave model empty to use the user's default. If go_chat says there is none, call go_models once and pick a featured model that fits the job.
 Go caches by prompt prefix within this session: put files shared across calls first in files, in the same order every time.`
 
@@ -1551,7 +1548,7 @@ const TOOLS: ToolDef[] = [
 
 files: local file paths; the tool reads them itself and puts them before the prompt (no need to copy file contents into arguments).
 output_path: saves the reply straight to that file (overwriting) and returns only the path and line count.
-Use it for long outputs such as code generation, so the full result never enters the caller's context. Then test the saved file or read parts of it.
+Use it for long outputs such as code generation, so the full result never enters your context. Then test the saved file or read parts of it.
 With output_path, max_tokens defaults to the model's output limit (at most ${FILE_MAX_TOKENS}).
 If the reply is truncated, a [truncated] line is added and it is saved to <output_path>.partial instead (the existing file is unchanged). If the reply is empty, no file is written.
 system: extra instructions appended to the worker's system prompt.
