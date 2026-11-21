@@ -1099,3 +1099,23 @@ test('chat: the band shows thinking while the model reasons, and clears after; t
   await ui.unmount()
   expect(w.sent.length).toBe(1)
 })
+
+test('chat jobs: the band adds up the thinking of all jobs while none has finished', async ($, on) => {
+  let mid: string | undefined
+  let calls = 0
+  world(on, [{ content: 'a', thinking: 1500 }, { content: 'b', thinking: 1500 }], {
+    midStream: async () => {
+      if (++calls !== 2) return
+      const ui = await ($.ui as any).mount(bandWith(140))
+      mid = (await ui.find({ type: 'Text', text: /done/ }))?.text
+      await ui.unmount()
+    },
+  })
+  await start($)
+  await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash', jobs: [{ prompt: 'x' }, { prompt: 'y' }] })
+  // the first job's 1.5K and the running one's: both counted
+  expect(mid).toMatch(/go_chat · \d\/2 done · thinking ~2\.\dK/)
+  const ui = await ($.ui as any).mount(bandWith(140))
+  expect(await ui.find({ type: 'Text', text: /done/ })).toBeUndefined()
+  await ui.unmount()
+})

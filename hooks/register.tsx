@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.6.3'
+const VERSION = '0.6.4'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -1192,13 +1192,28 @@ async function chatBatch(io: IO, cfg: Config, a: Args) {
 
   const ui = UI[await io.lang()]
   let done = 0
-  const show = () => io.progress('go_chat', { step: 0, doing: ui.batchDone(done, list.length) })
+  // Reasoning chunks so far, per job: their sum shows the jobs are at work while none has finished yet
+  const thinking = list.map(() => 0)
+  let shownThinking = 0
+  // One update at a time, in order, so the last one can't land after the bar is cleared
+  let shown = Promise.resolve()
+  const show = () => {
+    const sum = thinking.reduce((x, y) => x + y, 0)
+    shownThinking = sum
+    const doing = ui.batchDone(done, list.length) + (sum ? ` · ${ui.thinking(fmt(sum))}` : '')
+    shown = shown.then(() => io.progress('go_chat', { step: 0, doing })).catch(() => {})
+    return shown
+  }
   await show()
   let limited = false
   try {
     const outs = await pool(list.length, BATCH_CONCURRENCY, async (i): Promise<ChatOut> => {
+      const onProgress = (p: StreamProgress) => {
+        thinking[i] = p.thinking
+        if (thinking.reduce((x, y) => x + y, 0) - shownThinking >= 1000) void show()
+      }
       try {
-        return await chatOne(io, cfg, list[i]!)
+        return await chatOne(io, cfg, list[i]!, onProgress)
       } catch (err) {
         if (isLimitError(err)) limited = true
         return { text: `[failed] ${(err as Error).message}`, used: [] }
@@ -1212,7 +1227,7 @@ async function chatBatch(io: IO, cfg: Config, a: Args) {
     const body = outs.map((o, i) => `## job ${i + 1}${list[i]!.output_path ? ` · ${String(list[i]!.output_path)}` : ''}\n${o.text}`)
     return finish(io, cfg, [head, ...body].join('\n\n'), outs.flatMap(o => o.used))
   } finally {
-    await io.progress('go_chat', undefined)
+    await (shown = shown.then(() => io.progress('go_chat', undefined)).catch(() => {}))
   }
 }
 

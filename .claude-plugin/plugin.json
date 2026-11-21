@@ -1,6 +1,6 @@
 {
   "name": "opencode-go-worker",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "OpenCode Go as a flat-rate worker for Claude: one-shot jobs, a code explorer and a small coding agent, with plan usage in the status line. / Claude가 OpenCode Go(월정액)에 일을 맡깁니다: 한 번짜리 작업, 코드 탐색, 작은 코딩 에이전트, 상태줄의 사용량 표시.",
   "author": {
     "name": "doongchoong"
