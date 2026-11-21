@@ -18,7 +18,7 @@ No Python, Node, server or OpenCode CLI to install. It runs inside Claude Code.
 
 - **The bar above the prompt**: the model in use and this session's usage. Switch models in the dropdown; each one shows roughly how many requests fit in 5 hours. The `5h` figure turns yellow past 80% and red at the limit. On a narrow window the less important figures drop out first.
 - **The status line**: just how much of the plan's 5-hour window is used — and a sign the plugin is loaded.
-- While an agent works, the usage figures give way to its progress, like `go_agent step 3 · edit_file duration.py`.
+- While Go works, the usage figures give way to its progress: `go_chat · glm-5.3 · thinking ~42K` while the model reasons, then `writing… 120 lines`; `go_chat · 3/10 done` for jobs; `go_agent step 3 · edit_file duration.py` for an agent. None of it reaches Claude's context.
 
 ## Tools
 
@@ -99,6 +99,7 @@ To turn it off for a while, use `/plugin disable opencode-go-worker` or create `
 
 **Your files**
 - If a long output is cut off or the stream drops, the original file stays as it was and the reply goes to `<file>.partial`.
+- A stream that sends nothing at all for 5 minutes (no reasoning, no text, no keep-alive) is cut off instead of waiting forever.
 - An empty reply never overwrites a file.
 - File access follows Claude Code's permissions; a file behind a deny rule such as `Read(.env)` is never sent.
 

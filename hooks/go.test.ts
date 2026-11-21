@@ -3,9 +3,11 @@ import { expect, test } from 'claude-code/testing'
 const CHAT = 'mcp__opencode-go-worker__go_chat'
 const MODELS = 'mcp__opencode-go-worker__go_models'
 
-type Reply = { content: string; finish?: string; usage?: Record<string, unknown>; status?: number; error?: string; cut?: boolean; streamError?: unknown }
+type Reply = { content: string; finish?: string; usage?: Record<string, unknown>; status?: number; error?: string; cut?: boolean; streamError?: unknown; thinking?: number; idle?: 'before' | 'after' }
 
 type WorldOptions = {
+  // runs mid-stream, after the reasoning chunks and before any text (to look at the band then)
+  midStream?: () => Promise<void>
   disabled?: boolean
   keyFile?: boolean
   limitsStatus?: number
@@ -306,10 +308,21 @@ function world(on: any, replies: Reply[], opts: WorldOptions = {}) {
       yield { stream: 'stdout', text: chunk({ error: r.streamError }) + '\n[[go-worker-http 200]]' }
       return { value: { code: 0, signal: null } }
     }
+    if (r.idle === 'before') {
+      yield { stream: 'stderr', text: 'curl: (28) Operation too slow. Less than 1 bytes/sec transferred the last 300 seconds' }
+      return { value: { code: 28, signal: null } }
+    }
     const half = Math.ceil(r.content.length / 2)
     yield { stream: 'stdout', text: chunk({ model: body.model, choices: [{ delta: { reasoning_content: 'SECRET THOUGHTS' } }] }) }
+    for (let i = 1; i < (r.thinking ?? 0); i++) yield { stream: 'stdout', text: chunk({ model: body.model, choices: [{ delta: { reasoning_content: 'x' } }] }) }
+    if (opts.midStream) await opts.midStream()
     for (const piece of [r.content.slice(0, half), r.content.slice(half)]) {
       yield { stream: 'stdout', text: chunk({ model: body.model, choices: [{ delta: { content: piece } }] }) }
+    }
+    if (r.idle === 'after') {
+      yield { stream: 'stderr', text: 'curl: (28) Operation too slow. Less than 1 bytes/sec transferred the last 300 seconds' }
+      yield { stream: 'stdout', text: '\n[[go-worker-http 200]]' }
+      return { value: { code: 28, signal: null } }
     }
     if (r.cut) {
       // The connection drops: no finish marker, no usage
@@ -1043,5 +1056,40 @@ test('chat jobs: a failed job does not stop the others; bad batches are refused 
   expect(refusal(none)).toContain('jobs[0] has no prompt')
   const empty: any = await ($.tool.call as any)({ tool: CHAT, model: 'glm-5.3-flash' })
   expect(refusal(empty)).toContain('Give prompt, or jobs')
+  expect(w.sent.length).toBe(1)
+})
+
+test('chat: streams cut off after 5 silent minutes; non-streamed agent turns do not', EXPLORE_OPTS, async ($, on) => {
+  const w = world(on, [{ content: 'print(1)\n', idle: 'after' }, { content: '', idle: 'before' }], { agentSteps: [{ content: 'done' }] })
+  await start($)
+  const r = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', output_path: 'out.py', model: 'glm-5.3-flash' })
+  expect(w.configs[0]).toContain('speed-limit = 1')
+  expect(w.configs[0]).toContain('speed-time = 300')
+  expect(Object.keys(w.written)).toEqual(['out.py.partial'])
+  expect(text(r)).toContain('[interrupted] The reply was cut off while streaming (no data for 5 minutes, so the call was cut off)')
+
+  const dead: any = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
+  expect(refusal(dead)).toContain('no data for 5 minutes')
+
+  await ($.tool.call as any)({ tool: EXPLORE, question: 'x' })
+  expect(w.configs[w.configs.length - 1]).not.toContain('speed-limit')
+})
+
+test('chat: the band shows thinking while the model reasons, and clears after; the reasoning never reaches the reply', async ($, on) => {
+  let mid: string | undefined
+  const w = world(on, [{ content: 'answer', thinking: 1200 }], {
+    midStream: async () => {
+      const ui = await ($.ui as any).mount(bandWith(140))
+      mid = (await ui.find({ type: 'Text', text: /go_chat/ }))?.text
+      await ui.unmount()
+    },
+  })
+  await start($)
+  const r = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
+  expect(mid).toContain('go_chat · glm-5.3-flash · thinking ~1.2K')
+  expect(text(r)).not.toContain('SECRET')
+  const ui = await ($.ui as any).mount(bandWith(140))
+  expect(await ui.find({ type: 'Text', text: /go_chat/ })).toBeUndefined()
+  await ui.unmount()
   expect(w.sent.length).toBe(1)
 })

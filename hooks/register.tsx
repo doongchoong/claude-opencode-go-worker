@@ -54,7 +54,7 @@ type IO = {
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.6.1'
+const VERSION = '0.6.2'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -188,6 +188,7 @@ Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
       `No OpenCode Go API key. Set the api_key option of ${PLUGIN} in /plugin, or save the key to ${file}, readable only by you.`,
     keyFailed: (msg: string) => `Key check failed: ${msg}`,
     writing: (lines: number) => `writing… ${lines} lines`,
+    thinking: (tokens: string) => `thinking ~${tokens}`,
   },
   ko: {
     commandDescription: '이 세션의 OpenCode Go 워커 사용량과 플랜 한도 보기',
@@ -235,6 +236,7 @@ Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
       `OpenCode Go API 키가 없어요. /plugin 에서 ${PLUGIN}의 api_key 옵션에 넣거나, 본인만 읽을 수 있게 ${file}에 저장하세요.`,
     keyFailed: (msg: string) => `키 확인 실패: ${msg}`,
     writing: (lines: number) => `작성 중… ${lines}줄`,
+    thinking: (tokens: string) => `생각 중 ~${tokens}`,
   },
 } satisfies Record<Lang, unknown>
 
@@ -710,7 +712,10 @@ const curlQuote = (s: string) =>
   '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"'
 
 const STATUS_MARK = '\n[[go-worker-http '
-function curlConfig(cfg: Config, body: unknown, url = CHAT_URL, extra: string[] = []) {
+// A stream that sends nothing at all (no reasoning, no text, no keep-alive) for this long is cut off
+const IDLE_SECONDS = 300
+
+function curlConfig(cfg: Config, body: unknown, url = CHAT_URL, extra: string[] = [], stream = false) {
   return [
     `url = ${curlQuote(url)}`,
     ...extra.map(h => `header = ${curlQuote(h)}`),
@@ -724,6 +729,9 @@ function curlConfig(cfg: Config, body: unknown, url = CHAT_URL, extra: string[] 
     'silent',
     'show-error',
     'no-buffer',
+    // Streams only: a non-streamed reply is silent until it is done. curl's speed is averaged over a few seconds,
+    // so any chunk or keep-alive resets the count; a dead connection ends with curl error 28.
+    ...(stream ? ['speed-limit = 1', `speed-time = ${IDLE_SECONDS}`] : []),
   ].join('\n')
 }
 
@@ -754,10 +762,14 @@ class ApiError extends Error {
 }
 
 // Calls chat/completions with stream: true and collects the SSE chunks. If cut off midway, returns what arrived.
-// Reasoning text (delta.reasoning_content) is dropped. onLines hears the line count as the reply grows (every 20 lines).
-async function streamChat(io: IO, cfg: Config, body: Record<string, unknown>, onLines?: (lines: number) => void): Promise<Streamed> {
+// Reasoning text (delta.reasoning_content) is dropped, only counted. onProgress hears how far it got: reasoning
+// chunks (about one token each) while the model thinks, then the line count as the reply grows.
+type StreamProgress = { thinking: number; lines: number; writing: boolean }
+async function streamChat(io: IO, cfg: Config, body: Record<string, unknown>, onProgress?: (p: StreamProgress) => void): Promise<Streamed> {
   let lines = 0
-  let shown = 0
+  let thinking = 0
+  let shownLines = 0
+  let shownThinking = 0
   const req = { ...body, stream: true, stream_options: { include_usage: true } }
   const out: Streamed = { content: '', usage: undefined }
   const parts: string[] = []
@@ -785,21 +797,28 @@ async function streamChat(io: IO, cfg: Config, body: Record<string, unknown>, on
     if (chunk.model) out.model = chunk.model
     if (chunk.usage) out.usage = chunk.usage
     for (const c of chunk.choices ?? []) {
+      const r = c.delta?.reasoning_content ?? c.delta?.reasoning
+      if (typeof r === 'string' && r) {
+        thinking++
+        if (onProgress && !parts.length && thinking - shownThinking >= 200) {
+          shownThinking = thinking
+          onProgress({ thinking, lines, writing: false })
+        }
+      }
       if (c.delta?.content) {
+        const first = !parts.length
         parts.push(c.delta.content)
-        if (onLines) {
-          lines += c.delta.content.split('\n').length - 1
-          if (lines - shown >= 20) {
-            shown = lines
-            onLines(lines)
-          }
+        lines += c.delta.content.split('\n').length - 1
+        if (onProgress && (first || lines - shownLines >= 20)) {
+          shownLines = lines
+          onProgress({ thinking, lines, writing: true })
         }
       }
       if (c.finish_reason) out.finish = c.finish_reason
     }
   }
   try {
-    for await (const { stream, text } of io.spawn([cfg.curl, '--config', '-'], curlConfig(cfg, req))) {
+    for await (const { stream, text } of io.spawn([cfg.curl, '--config', '-'], curlConfig(cfg, req, CHAT_URL, [], true))) {
       if (stream === 'stderr') {
         stderr += text
         continue
@@ -817,6 +836,8 @@ async function streamChat(io: IO, cfg: Config, body: Record<string, unknown>, on
   }
   out.content = parts.join('')
   const status = Number(/\[\[go-worker-http (\d+)\]\]\s*$/.exec(last)?.[1] ?? 0)
+  const idle = /curl: \(28\)/.test(stderr) ? `no data for ${IDLE_SECONDS / 60} minutes, so the call was cut off` : ''
+  if (idle && !sawEvent) throw new ApiError(0, `OpenCode Go chat/completions failed: ${idle}.`)
   if (streamError && !(status >= 400)) {
     const st = statusOfStreamError(streamError)
     throw new ApiError(st, `OpenCode Go chat/completions failed${st ? ` (HTTP ${st}, in the stream)` : ' (in the stream)'}: ${JSON.stringify(streamError).slice(0, 500)}`)
@@ -825,7 +846,7 @@ async function streamChat(io: IO, cfg: Config, body: Record<string, unknown>, on
     const shown = raw.split(STATUS_MARK)[0]!.trim() || stderr.trim() || out.error || 'no response'
     throw new ApiError(status, `OpenCode Go chat/completions failed${status ? ` (HTTP ${status})` : ''}: ${shown.slice(0, 500)}`)
   }
-  if (!out.finish && !out.error) out.error = stderr.trim() || 'stream closed without a finish marker'
+  if (!out.finish && !out.error) out.error = idle || stderr.trim() || 'stream closed without a finish marker'
   return out
 }
 
@@ -882,7 +903,7 @@ async function buildPrompt(io: IO, cfg: Config, prompt: string, files: unknown) 
 
 type Reply = { content: string; usage: Tokens | undefined; model: string; complete: boolean; notes: string[] }
 
-async function request(io: IO, cfg: Config, a: Args, opts: { prompt: string; toFile: boolean; onLines?: (lines: number) => void }): Promise<Reply> {
+async function request(io: IO, cfg: Config, a: Args, opts: { prompt: string; toFile: boolean; onProgress?: (p: StreamProgress, model: string) => void }): Promise<Reply> {
   const { id, model, effort } = await resolveModel(io, cfg, a)
   const system = a.system ? `${COMMON_SYSTEM}\n\n${a.system}` : COMMON_SYSTEM
   const body: Record<string, unknown> = {
@@ -898,7 +919,7 @@ async function request(io: IO, cfg: Config, a: Args, opts: { prompt: string; toF
     (a.max_tokens as number | undefined) ?? (opts.toFile ? Math.min(FILE_MAX_TOKENS, model?.limit?.output ?? FILE_MAX_TOKENS) : undefined)
   if (maxTokens != null) body.max_tokens = maxTokens
 
-  const s = await streamChat(io, cfg, body, opts.onLines)
+  const s = await streamChat(io, cfg, body, opts.onProgress && (p => opts.onProgress!(p, id)))
   const notes = s.error ? [INTERRUPTED_NOTE.replace('{}', s.error.slice(0, 200))] : s.finish === 'length' ? [TRUNCATED_NOTE] : []
   const usage = tokensOf(s.usage)
   const bn = usage ? billingNote(usage) : ''
@@ -1066,11 +1087,11 @@ async function finish(io: IO, cfg: Config, text: string, used: Used[]) {
 type ChatOut = { text: string; used: Used[] }
 
 // One go_chat job: the reply, or where it was saved, with its notes; finish() adds the limits line
-async function chatOne(io: IO, cfg: Config, a: Args, onLines?: (lines: number) => void): Promise<ChatOut> {
+async function chatOne(io: IO, cfg: Config, a: Args, onProgress?: (p: StreamProgress, model: string) => void): Promise<ChatOut> {
   const prompt = String(a.prompt ?? '')
   const outputPath = a.output_path as string | undefined
   if (outputPath) await checkedPath(io, cfg, outputPath, 'write') // check the path before spending allowance
-  const r = await request(io, cfg, a, { prompt: outputPath ? prompt + FILE_ONLY_INSTRUCTION : prompt, toFile: !!outputPath, onLines })
+  const r = await request(io, cfg, a, { prompt: outputPath ? prompt + FILE_ONLY_INSTRUCTION : prompt, toFile: !!outputPath, onProgress })
   const used = r.usage ? [{ model: r.model, t: r.usage }] : []
   const t = tail(r)
   if (!outputPath) return { text: t ? `${r.content}\n\n${t}` : r.content, used }
@@ -1093,10 +1114,20 @@ async function chat(io: IO, cfg: Config, a: Args) {
   if (a.jobs !== undefined) return chatBatch(io, cfg, a)
   if (!String(a.prompt ?? '').trim()) throw new Error('Give prompt, or jobs for several tasks.')
   const ui = UI[await io.lang()]
+  // While it runs, the band shows how far it got: thinking, then writing
+  // (one update at a time, in order, so the last one can't land after the bar is cleared)
+  let shown = Promise.resolve()
+  const onProgress = (p: StreamProgress, model: string) => {
+    const doing = `${model} · ${p.writing ? ui.writing(p.lines) : ui.thinking(fmt(p.thinking))}`
+    shown = shown.then(() => io.progress('go_chat', { step: 0, doing })).catch(() => {})
+  }
+  const clear = () => (shown = shown.then(() => io.progress('go_chat', undefined)).catch(() => {}))
   try {
-    const r = await chatOne(io, cfg, a, n => io.status(ui.writing(n)))
+    const r = await chatOne(io, cfg, a, onProgress)
+    await clear()
     return finish(io, cfg, r.text, r.used)
   } catch (err) {
+    await clear()
     // A limit error: give Claude the reset times so it can take another route
     if (isLimitError(err)) {
       const l = await fetchLimits(io, cfg.key)
