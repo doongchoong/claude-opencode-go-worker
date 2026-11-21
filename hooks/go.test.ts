@@ -1077,16 +1077,22 @@ test('chat: streams cut off after 5 silent minutes; non-streamed agent turns do 
 
 test('chat: the band shows thinking while the model reasons, and clears after; the reasoning never reaches the reply', async ($, on) => {
   let mid: string | undefined
+  let midNarrow: string | undefined
   const w = world(on, [{ content: 'answer', thinking: 1200 }], {
     midStream: async () => {
       const ui = await ($.ui as any).mount(bandWith(140))
       mid = (await ui.find({ type: 'Text', text: /go_chat/ }))?.text
       await ui.unmount()
+      // a narrow row drops the label first and keeps the activity
+      const narrow = await ($.ui as any).mount(bandWith(62))
+      midNarrow = (await narrow.find({ type: 'Text', text: /thinking/ }))?.text
+      await narrow.unmount()
     },
   })
   await start($)
   const r = await ($.tool.call as any)({ tool: CHAT, prompt: 'x', model: 'glm-5.3-flash' })
   expect(mid).toContain('go_chat · glm-5.3-flash · thinking ~1.2K')
+  expect(midNarrow).toBe('thinking ~1.2K · 5h 4%')
   expect(text(r)).not.toContain('SECRET')
   const ui = await ($.ui as any).mount(bandWith(140))
   expect(await ui.find({ type: 'Text', text: /go_chat/ })).toBeUndefined()

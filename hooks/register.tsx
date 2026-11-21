@@ -47,14 +47,14 @@ type IO = {
   // A line in the transcript, for people
   log: (text: string) => void
   // go_agent's progress in the band above the prompt; undefined clears it
-  progress: (name: string, p: { step: number; doing: string } | undefined) => Promise<void>
+  progress: (name: string, p: { step: number; doing: string; who?: string } | undefined) => Promise<void>
   // The plugin's store across sessions (JSON data)
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
 }
 
 const PLUGIN = 'opencode-go-worker'
-const VERSION = '0.6.2'
+const VERSION = '0.6.3'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const USER_AGENT = `${PLUGIN}/${VERSION}`
 
@@ -145,7 +145,7 @@ const UI = {
   en: {
     commandDescription: "Show this session's OpenCode Go worker usage and plan limits",
     bandLabel: 'Go model',
-    exploring: (name: string, step: number, doing: string) => (step > 0 ? `${name} step ${step} · ${doing}` : `${name} · ${doing}`),
+    stepOf: (name: string, step: number) => `${name} step ${step}`,
     batchDone: (done: number, all: number) => `${done}/${all} done`,
     exploreThinking: 'thinking',
     agentChecking: 'checking',
@@ -193,7 +193,7 @@ Pick one with /go-model <id>. Available: ${ids.join(', ')}`,
   ko: {
     commandDescription: '이 세션의 OpenCode Go 워커 사용량과 플랜 한도 보기',
     bandLabel: 'Go 모델',
-    exploring: (name: string, step: number, doing: string) => (step > 0 ? `${name} ${step}단계 · ${doing}` : `${name} · ${doing}`),
+    stepOf: (name: string, step: number) => `${name} ${step}단계`,
     batchDone: (done: number, all: number) => `${done}/${all} 완료`,
     exploreThinking: '생각 중',
     agentChecking: '확인 중',
@@ -1000,7 +1000,13 @@ function progressParts(lang: Lang, x: Exploring, l: Limits): Part[] | undefined 
   const first = runs[0]
   if (!first) return undefined
   const t = UI[lang]
-  const parts: Part[] = [{ text: t.exploring(first.name ?? 'explore', first.step, first.doing), drop: 98 }]
+  const name = first.name ?? 'explore'
+  // On a narrow row the label goes first, so what it is doing (thinking ~42K, 3/10 done) stays in view
+  const label = first.step > 0 ? t.stepOf(name, first.step) : first.who ? `${name} · ${first.who}` : name
+  const parts: Part[] = [
+    { text: label, drop: 60 },
+    { text: first.doing, drop: 98 },
+  ]
   if (runs.length > 1) parts.push({ text: t.exploreMore(runs.length - 1), drop: 1 })
   const r = l?.rolling
   if (r) {
@@ -1118,8 +1124,8 @@ async function chat(io: IO, cfg: Config, a: Args) {
   // (one update at a time, in order, so the last one can't land after the bar is cleared)
   let shown = Promise.resolve()
   const onProgress = (p: StreamProgress, model: string) => {
-    const doing = `${model} · ${p.writing ? ui.writing(p.lines) : ui.thinking(fmt(p.thinking))}`
-    shown = shown.then(() => io.progress('go_chat', { step: 0, doing })).catch(() => {})
+    const doing = p.writing ? ui.writing(p.lines) : ui.thinking(fmt(p.thinking))
+    shown = shown.then(() => io.progress('go_chat', { step: 0, doing, who: model })).catch(() => {})
   }
   const clear = () => (shown = shown.then(() => io.progress('go_chat', undefined)).catch(() => {}))
   try {

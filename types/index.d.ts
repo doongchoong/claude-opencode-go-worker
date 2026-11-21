@@ -19,7 +19,8 @@ export type Window = { status: string; percent: number; resetsAt: string }
 export type Limits = { rolling?: Window; weekly?: Window; monthly?: Window; checkedAt: number } | null
 
 // Go agents at work (explore, worker), by agent id: which one, the step it is on and what it is doing
-export type Exploring = Record<string, { name?: string; step: number; doing: string }>
+// `who`: the model, for go_chat, whose step is 0
+export type Exploring = Record<string, { name?: string; step: number; doing: string; who?: string }>
 
 // The language people read, decided once per session for the `language` option it was decided under
 export type UiLang = { option: string; lang: 'en' | 'ko' } | null
